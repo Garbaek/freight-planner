@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>FreightPlanner</AssemblyName>
+    <RootNamespace>FreightCopilot</RootNamespace>
+    <Version>0.6.0</Version>
+    <Company>Garbæk IT</Company>
+    <Authors>Garbæk IT</Authors>
+    <Product>Freight Planner</Product>
+    <Description>Freight Planner hauling planner</Description>
+    <Copyright>© 2026 Garbæk IT</Copyright>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="server\**\*.cs" />
+    <Content Remove="server\**\*" />
+    <None Remove="server\**\*" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="settings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="travel-times.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="ships.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="QRCoder" Version="1.8.0" />
+  </ItemGroup>
+</Project>

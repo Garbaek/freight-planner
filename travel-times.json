@@ -1,0 +1,9 @@
+{
+  "SchemaVersion": 1,
+  "DefaultSameBodyMinutes": 6,
+  "DefaultCrossBodyMinutes": 14,
+  "DefaultUnknownMinutes": 8,
+  "FixedPreflightMinutes": 5,
+  "HandlingMinutesPerStop": 2,
+  "Legs": []
+}

@@ -1,0 +1,51 @@
+# Build output and packaged releases
+bin/
+obj/
+publish*/
+FreightCopilot-windows*/
+FreightPlanner-windows*/
+*.zip
+*.apk
+
+# IDE
+.vs/
+.idea/
+*.user
+*.suo
+
+# Local runtime data: holds your own contracts, screenshots paths and OCR text
+active-session.json
+ignored-images.json
+plan-history/
+test-reports/
+.appdata/
+.dotnet-cli/
+
+# Secrets and signing material
+.env
+*.pfx
+android/keystore.properties
+android/*.jks
+
+# The account server is not part of this repository
+server/
+server-data/
+.test-api/
+docker-compose.yml
+.env.example
+
+# Local notes, launchers and scratch tools
+reddit-release-*.md
+Start Freight Planner.cmd
+tools/
+
+# Android
+android/.gradle/
+android/.gradle-cache/
+android/.kotlin/
+android/.android-sdk/
+android/.android-sdk-tools/
+android/.sdk-download/
+android/local.properties
+android/**/build/
+android/*.png

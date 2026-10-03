@@ -1,0 +1,96 @@
+# Freight Planner
+
+Freight Planner is a free fan-made helper for cargo hauling in Star Citizen. You take screenshots of hauling contracts, and the Windows app reads them with local OCR, combines contracts into one run that fits your ship and the tightest contract timer, and tells you which crates to pick up and where to put them. An optional Android app shows the run as a checklist on a tablet next to your screen.
+
+- Download: https://freightplanner.cipherdispatch.com/
+- Demo video: https://youtu.be/xVkjCtxEPEQ
+
+This repository holds the source of the Windows app (repository root) and the Android app (`android/`). The small account server that links the two is run by the author and is not part of this repository.
+
+It is an early alpha. Most of the code was written with AI coding assistants under the author's direction; the idea, the design, the in-game testing and the server are the author's.
+
+## What it does not do
+
+Freight Planner sends no keyboard, mouse or controller input, does not hook into the game and does not read game memory. It only reads the screenshot files you create yourself.
+
+## Privacy and architecture
+
+- Screenshots are cropped and processed only on your Windows PC.
+- Windows' built-in `Windows.Media.Ocr` API performs OCR. No external OCR program or third-party OCR package is required.
+- The app prefers the Windows English (United States) OCR language because the game UI is English, then falls back to a user-profile OCR language.
+- All screenshots, OCR text, contract data, route calculations, and saved plans remain local.
+- No AI server, cloud API, or language model is used by the app. The optional account is the only network feature.
+- The Windows planner works without an account. An account is only needed to link a tablet. The server stores the account's email, display name and a salted password hash, and relays the route checklist between the two devices in memory.
+
+## Using it
+
+1. Run `FreightPlanner.exe`. On first start it searches the fixed drives for `StarCitizen\LIVE\screenshots` and fills in the screenshot folder. Use **Find** next to the folder box to search again.
+2. In the game, open one contract with its reward and all primary objectives visible and press Print Screen. Repeat for the contracts you are considering.
+3. In watch mode, OCR runs as new screenshots arrive and route planning starts after a short quiet period. **Scan recent screenshots** reads up to 20 images from the newest uninterrupted capture session.
+4. Check the jobs you want to fly together and press **Plan checked jobs**, or leave all jobs unchecked and use **Plan suggested run**.
+5. With no jobs checked, **Compare plans** compares **Highest reward**, **Safest deadlines** and **Shortest flight**.
+6. **Open route view** shows the numbered loading plan. **Execute route** is a persistent accepted/collected/loaded/delivered checklist.
+7. In execution mode, **Start next leg** and **Arrived** teach the app your door-to-door time for the current ship.
+8. **Travel map & times** lets you inspect or edit manual and learned route times.
+9. Double-click a contract, or use **Edit / inspect contract**, to compare the screenshot, the raw OCR text and the parsed fields, and to correct anything that was misread.
+
+If Windows has no English OCR language, add one under **Settings > Time & language > Language & region**.
+
+### Tablet
+
+Use **Account** to register or sign in. Registering sends a verification link to the email address, and the account can sign in only after that link is opened. Then choose **Pair phone**: Windows shows a QR code and a six-digit code. In the Android app, tap **SCAN PC QR CODE** on the sign-in screen; the scan signs the tablet in and links it. Both codes expire after 10 minutes and work once.
+
+The plan is sent to the linked tablet automatically after planning; **Send to tablet** forces an immediate upload. The link has to be made again each time the Windows app is started.
+
+## How the planner decides
+
+- Local code parses title, reward, SCU, cargo, container size, pickups, and destinations.
+- Contract availability countdowns are read locally. Elapsed time since the screenshot is subtracted before every recommendation.
+- Already accepted contracts showing **Contract Deadline N/A** are labelled **Accepted** and remain plannable.
+- Common OCR character and numeric-separator errors are normalized.
+- When several screenshots contain the exact same cargo manifest and route, a blank reward or title may be recovered from the matching readable copy. Conflicting values are never guessed.
+- Repeated screenshots of the same contract are merged instead of creating duplicate freight.
+- Missing or suspicious data (for example reward 200 or SCU 0) is visibly warned about and excluded from automatic selection.
+- For a manually checked warning row, **Use contract anyway** is available when cargo quantity, pickup, and destination are readable. The resulting route is marked as a manual override.
+- The selected ship capacity is enforced and the combined reward is calculated locally.
+- The recommendation is one time-feasible next run, not every valid contract. It reserves a 10-minute margin and lists other valid contracts separately.
+- Estimated run time combines route legs, stop handling, and the expected number of cargo containers. Countdowns refresh every 30 seconds.
+- Route legs use `travel-times.json`. Recorded times influence both stop ordering and deadline estimates; unrecorded legs use clearly labelled defaults.
+- Routes enforce every pickup before its delivery and require hub revisits for return cargo such as A→B plus B→A.
+- Cargo instructions include exact crate decomposition, for example `7 SCU → 4 SCU + 3 SCU` when containers are limited to 4 SCU.
+- The same inputs and travel-time table produce the same plan.
+- The ship selector is loaded from `ships.json`. Edit that file to add ships without recompiling.
+
+Local files written next to the app: `plan-history/` (every completed plan as JSON), `active-session.json` (the current batch and checklist), `ignored-images.json` (screenshots already read) and `travel-times.json`.
+
+## Building
+
+Windows app, with the .NET 8 SDK (the feature band in `global.json`):
+
+```powershell
+dotnet build -c Release
+dotnet publish FreightCopilot.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=none -o publish
+```
+
+An OCR and parser check can be run without opening the UI:
+
+```powershell
+dotnet .\bin\Release\net8.0-windows10.0.19041.0\FreightPlanner.dll --self-test "path-to-screenshot.jpg" "ocr-report.json"
+```
+
+Android app: see [`android/README.md`](android/README.md).
+
+## Limitations
+
+- The contract panel is located by fixed screen proportions measured on a 16:9 monitor at 2560x1440. Other 16:9 resolutions read the same in tests with resized screenshots. Ultrawide and other aspect ratios probably do not work yet.
+- OCR can only use text actually visible in a screenshot. If the game does not render a reward or quantity, the record is marked incomplete unless the same batch contains an exact manifest-and-route match with one unambiguous readable value.
+- Scroll long objective lists into view and take another screenshot when necessary. Screenshots are treated as individual contract records.
+- The route planner has no live planetary-distance database. It uses the editable travel-time table and always enforces pickup-before-delivery dependencies.
+- Trip time is an estimate. Recording your own door-to-door times makes it progressively more accurate for your ship and flying style.
+- Location spelling is normalized for common observed OCR errors, but unusual new locations may still need manual correction.
+- There is no password reset yet, and the Windows app does not stay signed in between starts.
+- Release builds are unsigned, so Windows SmartScreen and Android warn before installing.
+
+## Disclaimer
+
+Freight Planner is an unofficial fan-made tool and is not affiliated with the Cloud Imperium group of companies. Star Citizen® is a registered trademark of Cloud Imperium Rights LLC.
