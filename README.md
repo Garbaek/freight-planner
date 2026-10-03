@@ -2,7 +2,7 @@
 
 Freight Planner is a free fan-made helper for cargo hauling in Star Citizen. You take screenshots of hauling contracts, and the Windows app reads them with local OCR, combines contracts into one run that fits your ship and the tightest contract timer, and tells you which crates to pick up and where to put them. An optional Android app shows the run as a checklist on a tablet next to your screen.
 
-- Download: https://freightplanner.cipherdispatch.com/
+- Download: https://freightplanner.cipherdispatch.com/ or the [Releases](../../releases) page
 - Demo video: https://youtu.be/xVkjCtxEPEQ
 
 This repository holds the source of the Windows app (repository root) and the Android app (`android/`). The small account server that links the two is run by the author and is not part of this repository.
@@ -90,6 +90,12 @@ Android app: see [`android/README.md`](android/README.md).
 - Location spelling is normalized for common observed OCR errors, but unusual new locations may still need manual correction.
 - There is no password reset yet, and the Windows app does not stay signed in between starts.
 - Release builds are unsigned, so Windows SmartScreen and Android warn before installing.
+
+## Licence
+
+Copyright (C) 2026 Garbæk IT
+
+Freight Planner is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, version 3. It is distributed in the hope that it will be useful, but without any warranty. See [LICENSE](LICENSE) for the full text.
 
 ## Disclaimer
 
