@@ -76,7 +76,16 @@ public sealed class ContractScan
         ContractDeadlineNotApplicable ? int.MaxValue : RemainingMinutes(planningUtc);
 }
 
-public sealed record ShipProfile(string Name, int CapacityScu);
+// One rectangular cargo grid in 1-SCU cells. Ships without grids are limited by total SCU only.
+// MaxCrateScu is set where the grid takes only smaller crates than its shape has room for; 0 when the shape decides.
+public sealed record CargoGrid(int Width, int Height, int Length, int MaxCrateScu = 0)
+{
+    public int Scu => Width * Height * Length;
+}
+
+// FormerNames are what the ship was called in earlier catalogs, before the game renamed it.
+public sealed record ShipProfile(string Name, int CapacityScu, IReadOnlyList<CargoGrid>? Grids = null, string Note = "",
+    IReadOnlyList<string>? FormerNames = null);
 
 public enum PlanPreference
 {
@@ -113,4 +122,7 @@ public sealed class AppSettings
     public int ShipCapacity { get; set; } = 192;
     public PlanPreference PlanPreference { get; set; } = PlanPreference.Balanced;
     public string ApiBaseUrl { get; set; } = "https://freightplanner.cipherdispatch.com";
+    // The station last picked in Trade ideas.
+    public string TradeStation { get; set; } = "";
+    public TradeSettings Trade { get; set; } = new();
 }

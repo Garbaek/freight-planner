@@ -19,7 +19,8 @@ data class MobilePlan(
     val summary: String,
     val currentStopIndex: Int,
     val currentStopCompleted: Boolean,
-    val stops: List<MobilePlanStop>
+    val stops: List<MobilePlanStop>,
+    val checkedAtUnixMs: Map<String, Long>? = null
 )
 data class MobilePlanStop(
     val number: Int,
@@ -38,14 +39,6 @@ class ApiClient(baseUrl: String) {
         require(uri.scheme.equals("https", ignoreCase = true)) { "The account server must use HTTPS." }
     }
 
-    // Registration only starts email verification; the returned text tells the user what to do next.
-    fun register(email: String, displayName: String, password: String): String =
-        JSONObject(postRaw("/api/auth/register", JSONObject().apply {
-            put("email", email)
-            put("displayName", displayName)
-            put("password", password)
-        })).optString("message")
-
     fun resendVerification(email: String): String =
         JSONObject(postRaw("/api/auth/resend-verification", JSONObject().put("email", email))).optString("message")
 
@@ -63,6 +56,13 @@ class ApiClient(baseUrl: String) {
 
     fun refresh(refreshToken: String): AuthSession =
         post("/api/auth/refresh", JSONObject().put("refreshToken", refreshToken))
+
+    fun trackLaunch(version: String) {
+        postRaw("/api/usage/launch", JSONObject().apply {
+            put("platform", "android")
+            put("version", version.take(32))
+        })
+    }
 
     fun pairPc(accessToken: String, code: String): PairedDevice {
         val json = JSONObject(postRaw("/api/pairing/mobile", JSONObject().put("code", code), accessToken))
@@ -94,6 +94,9 @@ class ApiClient(baseUrl: String) {
         if (!success) throw ApiException(errorMessage(text, responseCode), responseCode)
         val json = JSONObject(text)
         val stopsJson = json.getJSONArray("stops")
+        val checked = json.optJSONObject("checkedAtUnixMs")?.let { values ->
+            values.keys().asSequence().associateWith { key -> values.optLong(key, 0L) }.filterValues { it > 0L }
+        }
         return MobilePlan(
             json.getLong("revision"), json.getString("title"), json.getString("summary"),
             json.optInt("currentStopIndex", 0), json.optBoolean("currentStopCompleted", false),
@@ -104,7 +107,7 @@ class ApiClient(baseUrl: String) {
                     stop.optionalStrings("deliveries"), stop.optionalStrings("pickups"),
                     stop.optionalStrings("packing")
                 )
-            }
+            }, checked
         )
     }
 

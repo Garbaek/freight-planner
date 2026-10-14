@@ -44,11 +44,14 @@ public sealed record PlanAlternative(PlanPreference Preference, string Name, str
 
 public static class ManifestOptimizer
 {
-    public static ManifestResult Build(IReadOnlyList<ContractScan> scans, int capacity, DateTime? planningUtc = null,
+    public static bool FitsShip(IReadOnlyList<ContractScan> contracts, ShipProfile ship) =>
+        contracts.Sum(x => x.TotalScu) <= ship.CapacityScu && CratePlanner.Fits(contracts, ship.Grids);
+
+    public static ManifestResult Build(IReadOnlyList<ContractScan> scans, ShipProfile ship, DateTime? planningUtc = null,
         TravelTimeDatabase? travelTimes = null, PlanPreference preference = PlanPreference.Balanced)
     {
         var now = planningUtc ?? DateTime.UtcNow;
-        var usable = scans.Where(x => x.IsEligible && x.TotalScu > 0 && x.TotalScu <= capacity && x.PlanningMinutesRemaining(now) > 0).ToList();
+        var usable = scans.Where(x => x.IsEligible && x.TotalScu > 0 && FitsShip([x], ship) && x.PlanningMinutesRemaining(now) > 0).ToList();
         if (usable.Count == 0) return new ManifestResult { PlanningUtc = now, Preference = preference };
 
         var pickupFrequency = usable.SelectMany(GetPickupLocations).GroupBy(NormalizeLocation)
@@ -65,8 +68,8 @@ public static class ManifestOptimizer
             var expanded = new List<TripCandidate>(states);
             foreach (var state in states)
             {
-                if (state.Contracts.Sum(x => x.TotalScu) + contract.TotalScu > capacity) continue;
                 var contracts = new List<ContractScan>(state.Contracts) { contract };
+                if (!FitsShip(contracts, ship)) continue;
                 var manifest = CreateManifest(contracts, now, travelTimes: travelTimes, preference: preference);
                 if (manifest.HasKnownAvailability && manifest.HeadroomMinutes < 0) continue;
                 var balanced = contracts.Sum(x => ContractValue(x, pickupFrequency, destinationFrequency)) -
@@ -89,36 +92,36 @@ public static class ManifestOptimizer
         return states.Where(x => x.Contracts.Count > 0).MaxBy(x => x.Score)?.Manifest ?? new ManifestResult { PlanningUtc = now, Preference = preference };
     }
 
-    public static List<PlanAlternative> BuildAlternatives(IReadOnlyList<ContractScan> scans, int capacity,
+    public static List<PlanAlternative> BuildAlternatives(IReadOnlyList<ContractScan> scans, ShipProfile ship,
         DateTime? planningUtc = null, TravelTimeDatabase? travelTimes = null)
     {
         var choices = new[]
         {
             new PlanAlternative(PlanPreference.HighestReward, "Highest reward", "Maximizes safe combined aUEC within capacity and deadlines.",
-                Build(scans, capacity, planningUtc, travelTimes, PlanPreference.HighestReward)),
+                Build(scans, ship, planningUtc, travelTimes, PlanPreference.HighestReward)),
             new PlanAlternative(PlanPreference.SafestDeadlines, "Safest deadlines", "Maximizes the remaining timer margin after the estimated run.",
-                Build(scans, capacity, planningUtc, travelTimes, PlanPreference.SafestDeadlines)),
+                Build(scans, ship, planningUtc, travelTimes, PlanPreference.SafestDeadlines)),
             new PlanAlternative(PlanPreference.ShortestFlight, "Shortest flight", "Prefers the quickest useful contract run.",
-                Build(scans, capacity, planningUtc, travelTimes, PlanPreference.ShortestFlight))
+                Build(scans, ship, planningUtc, travelTimes, PlanPreference.ShortestFlight))
         };
         return choices.Where(x => x.Manifest.Contracts.Count > 0).ToList();
     }
 
-    public static ManifestResult BuildSelected(IReadOnlyList<ContractScan> selected, int capacity, DateTime? planningUtc = null, TravelTimeDatabase? travelTimes = null)
+    public static ManifestResult BuildSelected(IReadOnlyList<ContractScan> selected, ShipProfile ship, DateTime? planningUtc = null, TravelTimeDatabase? travelTimes = null)
     {
         var now = planningUtc ?? DateTime.UtcNow;
         var invalid = selected.Any(x => !x.IsEligible && !(x.ManualOverride && x.CanUseManualOverride));
         var expired = selected.Any(x => x.AvailabilityMinutes is > 0 && x.RemainingMinutes(now) <= 0);
-        if (selected.Count == 0 || invalid || expired || selected.Sum(x => x.TotalScu) > capacity)
+        if (selected.Count == 0 || invalid || expired || !FitsShip(selected, ship))
             return new ManifestResult { PlanningUtc = now, IsManualSelection = true };
         return CreateManifest(selected.ToList(), now, manualSelection: true, travelTimes: travelTimes);
     }
 
-    public static ManifestResult RefreshExisting(ManifestResult existing, int capacity, DateTime? planningUtc = null,
+    public static ManifestResult RefreshExisting(ManifestResult existing, ShipProfile ship, DateTime? planningUtc = null,
         TravelTimeDatabase? travelTimes = null)
     {
         var now = planningUtc ?? DateTime.UtcNow;
-        if (existing.Contracts.Count == 0 || existing.Contracts.Sum(x => x.TotalScu) > capacity)
+        if (existing.Contracts.Count == 0 || !FitsShip(existing.Contracts, ship))
             return new ManifestResult { PlanningUtc = now, Preference = existing.Preference };
         return CreateManifest(existing.Contracts.ToList(), now, existing.IsManualSelection, travelTimes, existing.Preference);
     }
@@ -345,7 +348,9 @@ public static class ManifestOptimizer
             foreach (var scan in deferred.OrderBy(x => x.PlanningMinutesRemaining(result.PlanningUtc)).ThenByDescending(x => x.Reward))
             {
                 var timer = scan.ContractDeadlineNotApplicable ? "accepted — no offer timer" : $"{FormatDuration(scan.RemainingMinutes(result.PlanningUtc))} left";
-                lines.Add($"• {scan.Reward:N0} aUEC — {scan.TotalScu:N0} SCU — {string.Join("; ", GetPickupLocations(scan).Select(MapLocationLabel))} → {string.Join("; ", scan.Cargo.Select(x => MapLocationLabel(x.Destination)).Distinct(StringComparer.OrdinalIgnoreCase))} — {timer}");
+                var grid = scan.TotalScu <= ship.CapacityScu && !CratePlanner.Fits([scan], ship.Grids)
+                    ? $" — ⚠ crates ({CratePlanner.DescribeContainers([scan])}) do not fit the {ship.Name} cargo grid" : "";
+                lines.Add($"• {scan.Reward:N0} aUEC — {scan.TotalScu:N0} SCU — {string.Join("; ", GetPickupLocations(scan).Select(MapLocationLabel))} → {string.Join("; ", scan.Cargo.Select(x => MapLocationLabel(x.Destination)).Distinct(StringComparer.OrdinalIgnoreCase))} — {timer}{grid}");
             }
             lines.Add(result.IsManualSelection
                 ? "Check different jobs and press Plan checked jobs to rebuild the route."

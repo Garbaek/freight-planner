@@ -16,7 +16,42 @@ internal static class Program
             RunBatchSelfTestAsync(args[1], args[2]).GetAwaiter().GetResult();
             return;
         }
+        if (args.Length >= 3 && args[0].Equals("--market-self-test", StringComparison.OrdinalIgnoreCase))
+        {
+            RunMarketSelfTestAsync(args[1], args[2]).GetAwaiter().GetResult();
+            return;
+        }
         Application.Run(new MainForm());
+    }
+
+    // Reads one commodity-terminal screenshot and writes the OCR words and what was understood from them.
+    private static async Task RunMarketSelfTestAsync(string imagePath, string reportPath)
+    {
+        try
+        {
+            var ocr = new LocalOcrService();
+            using var image = Image.FromFile(imagePath);
+            string database;
+            try
+            {
+                var store = new MarketStore(AppContext.BaseDirectory);
+                database = $"ok: {store.Observations().Count} observation(s) and {store.Trades().Count} run(s) in {store.PathOnDisk}";
+            }
+            catch (Exception ex) { database = ex.Message; }
+            var report = new
+            {
+                engine = ocr.EngineDescription,
+                database,
+                scan = await TerminalReader.ReadAsync(ocr, imagePath, CancellationToken.None),
+                frame = await ocr.ReadFrameAsync(image, CancellationToken.None)
+            };
+            await File.WriteAllTextAsync(reportPath, System.Text.Json.JsonSerializer.Serialize(report, JsonDefaults.Options()));
+        }
+        catch (Exception ex)
+        {
+            Environment.ExitCode = 1;
+            await File.WriteAllTextAsync(reportPath, System.Text.Json.JsonSerializer.Serialize(new { error = ex.ToString() }, JsonDefaults.Options()));
+        }
     }
 
     private static async Task RunSelfTestAsync(string imagePath, string reportPath)
@@ -70,8 +105,9 @@ internal static class Program
             // diagnostic tests the countdown algorithm rather than today's wall clock.
             var simulatedPlanningUtc = scans.Count > 0 ? scans.Max(x => x.CapturedAtUtc) : DateTime.UtcNow;
             var travelTimes = new TravelTimeDatabase(AppContext.BaseDirectory);
-            var manifest = ManifestOptimizer.Build(scans, 192, simulatedPlanningUtc, travelTimes);
-            if (manifest.TotalScu > 192 || manifest.Contracts.Any(scan => !scan.IsEligible))
+            var ship = new ShipProfile("ARGO RAFT", 192);
+            var manifest = ManifestOptimizer.Build(scans, ship, simulatedPlanningUtc, travelTimes);
+            if (manifest.TotalScu > ship.CapacityScu || manifest.Contracts.Any(scan => !scan.IsEligible))
                 throw new InvalidOperationException("Deterministic manifest validation failed.");
             var report = new
             {
@@ -92,7 +128,7 @@ internal static class Program
                 travel_time_file = travelTimes.PathOnDisk,
                 recorded_travel_legs = manifest.TravelLegs.Count(x => x.IsRecorded),
                 default_travel_legs = manifest.TravelLegs.Count(x => !x.IsRecorded),
-                formatted_manifest = ManifestOptimizer.Format(manifest, new ShipProfile("ARGO RAFT", 192), scans),
+                formatted_manifest = ManifestOptimizer.Format(manifest, ship, scans),
                 records = scans.Select(x => new
                 {
                     source = Path.GetFileName(x.SourceFile), x.Title, x.Reward, x.TotalScu, x.AvailabilityMinutes,

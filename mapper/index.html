@@ -1,0 +1,985 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#07171c">
+<meta name="description" content="Build and export a Star Citizen HOTAS profile for the Thrustmaster T.16000M FCS and TWCS throttle, or two T.16000M sticks.">
+<title>HOTAS Mapper — Freight Planner</title>
+<style>
+:root{
+  --bg:#0b0f17; --panel:#121927; --panel2:#182235; --line:#25324a; --text:#d7e1f0; --dim:#8494ad;
+  --accent:#39c5e8; --accent2:#f0a93b; --ok:#4cd08a; --bad:#ef6464; --js1:#39c5e8; --js2:#c58cf5;
+  --mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 "Segoe UI",system-ui,sans-serif}
+header{padding:0 24px 18px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,#101a2c,var(--bg))}
+.site-nav{max-width:1440px;margin:0 auto 18px;padding:12px 0;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:16px}
+.site-nav a{color:var(--dim);text-decoration:none;font:12px var(--mono);letter-spacing:.12em;text-transform:uppercase}
+.site-nav a:hover{color:var(--accent)}
+.site-nav .brand{color:var(--text);font-weight:700;margin-right:auto}
+.site-nav .current{color:var(--accent)}
+.hero{max-width:1440px;margin:0 auto}
+h1{margin:0;font-size:22px;letter-spacing:.06em;text-transform:uppercase}
+h1 span{color:var(--accent)}
+header p{margin:4px 0 0;color:var(--dim)}
+h2{margin:0 0 10px;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+main{display:grid;grid-template-columns:minmax(320px,400px) 1fr;gap:16px;padding:16px 24px 120px;align-items:start}
+@media(max-width:900px){header{padding-left:12px;padding-right:12px}.site-nav{margin-bottom:14px}main{grid-template-columns:1fr;padding:12px 12px 140px}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}
+.left{display:grid;gap:16px;position:sticky;top:12px}
+.left>*{min-width:0}
+#savePath{overflow-wrap:anywhere}
+@media(max-width:900px){.left{position:static}}
+button,select,input[type=text],input[type=search]{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:6px 10px}
+button{cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#04202a;font-weight:600}
+button.warn{background:var(--accent2);border-color:var(--accent2);color:#2a1a00;font-weight:600}
+button.sm{padding:2px 8px;font-size:12px}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.toolbar .grow{flex:1}
+code,.mono{font-family:var(--mono);font-size:12px}
+.dim{color:var(--dim)}
+.dev{border:1px solid var(--line);border-radius:6px;padding:10px;margin-top:10px;background:var(--panel2)}
+.dev-head{display:flex;gap:8px;align-items:center;justify-content:space-between}
+.dev-name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.btns{display:flex;flex-wrap:wrap;gap:4px;margin:10px 0}
+.b{width:26px;height:22px;border-radius:4px;border:1px solid var(--line);font:11px var(--mono);display:grid;place-items:center;color:var(--dim)}
+.b.on{background:var(--ok);color:#03200f;border-color:var(--ok)}
+.ax{display:grid;grid-template-columns:22px 1fr 96px;gap:8px;align-items:center;margin-top:4px}
+.ax .bar{height:10px;background:#0c1220;border:1px solid var(--line);border-radius:5px;position:relative;overflow:hidden}
+.ax .bar i{position:absolute;top:0;bottom:0;width:3px;background:var(--accent);left:50%}
+.ax select{padding:1px 4px;font-size:12px}
+.hat{font:12px var(--mono);color:var(--dim)}
+#lastInput{margin-top:12px;padding:8px 10px;border:1px dashed var(--line);border-radius:6px;min-height:52px}
+#lastInput b{font-family:var(--mono);color:var(--ok)}
+.tabs{display:flex;gap:4px}
+.tabs button.active{border-color:var(--accent);color:var(--accent)}
+.grp{margin:16px 0 4px;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+main>*{min-width:0}
+.row>div:first-child{flex:1 1 200px}
+.row .acts{margin-left:auto}
+.row{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;padding:7px 10px;border:1px solid transparent;border-bottom-color:var(--line)}
+.row:hover{background:var(--panel2)}
+.row.live{border-color:var(--ok);background:#12301f}
+.row.listening{border-color:var(--accent2);background:#33260c}
+.row .lbl{font-weight:500}
+.row .id{color:var(--dim);font:11px var(--mono)}
+.row .help{color:#a9b6cc;font-size:13px;max-width:70ch;margin:1px 0 2px}
+#wizHelp{max-width:90ch;margin-top:2px}
+.grp+.help{color:#a9b6cc;font-size:13px;max-width:90ch;margin:0 0 4px}
+.sug,#wizSug{font-size:12px;color:var(--accent2);margin-top:2px}
+.sug.ok{color:var(--ok)}
+.tag{font-size:10px;padding:1px 5px;border-radius:8px;border:1px solid var(--line);color:var(--dim);margin-left:6px;vertical-align:1px}
+.tag.axis{color:var(--accent2);border-color:#5c4416}
+.tag.unv{color:var(--bad);border-color:#5c2424;cursor:help}
+.chip{font:12px var(--mono);padding:3px 8px;border-radius:12px;border:1px solid var(--line);white-space:nowrap;text-align:right}
+.chip.js1{border-color:var(--js1);color:var(--js1)} .chip.js2{border-color:var(--js2);color:var(--js2)}
+.chip.cleared{color:var(--dim);font-style:italic}
+.chip small{display:block;font:11px "Segoe UI",sans-serif;color:var(--dim)}
+.chip .dup{color:var(--accent2)}
+.acts{display:flex;gap:4px;align-items:center}
+.acts label{font-size:12px;color:var(--dim);margin-right:4px}
+details{margin-top:10px}
+summary{cursor:pointer;color:var(--accent)}
+ol{padding-left:20px;margin:8px 0}
+li{margin:4px 0}
+pre{background:#0c1220;border:1px solid var(--line);border-radius:6px;padding:10px;overflow:auto;max-height:340px;font:12px var(--mono)}
+#wizard{position:fixed;left:0;right:0;bottom:0;background:#33260c;border-top:2px solid var(--accent2);padding:14px 24px;display:none;gap:14px;align-items:center;flex-wrap:wrap;z-index:5}
+#wizard.on{display:flex}
+#wizard .what{flex:1;min-width:240px}
+#wizard .what b{font-size:17px}
+.pulse{width:12px;height:12px;border-radius:50%;background:var(--accent2);animation:p 1s infinite}
+@keyframes p{50%{opacity:.25}}
+.note{border-left:3px solid var(--accent2);padding:6px 10px;background:#231c0e;border-radius:0 6px 6px 0;margin-top:10px;font-size:13px}
+#views{margin-bottom:12px}
+#views button{flex:1;padding:8px 14px;font-weight:600}
+#views button.active{background:var(--accent);color:#04202a}
+#sheetView{display:none}
+.sheet-on #sheetView{display:block}
+.sheet-on #tabs,.sheet-on #search,.sheet-on #btnAdd,.sheet-on #actions{display:none}
+#sheetView p{margin:0 0 10px}
+#pick{position:sticky;top:8px;z-index:2;display:grid;gap:8px;margin:0 0 10px;border-color:var(--accent2)}
+#pick[hidden]{display:none}
+#pick select{max-width:260px}
+#pick input{width:110px}
+.sheet-scroll{overflow-x:auto;border-radius:6px}
+#sheet{position:relative;min-width:780px;background:#fff;container-type:inline-size}
+#sheet img{display:block;width:100%;height:auto}
+.box{position:absolute;display:flex;flex-direction:column;justify-content:safe center;align-items:center;gap:1px;overflow:hidden;padding:0 2px;border:0;border-radius:3px;
+  background:none;color:#0b1630;font:600 calc(1.02cqw*var(--k,1))/1.12 "Segoe UI",system-ui,sans-serif;text-align:center}
+.box i{font:400 .9em var(--mono);color:#8b96bd}
+.box:hover{outline:2px solid var(--accent)}
+.box.sel{outline:2px solid var(--accent2);background:#ffe3ad}
+.box.live{background:var(--ok)}
+#offSheet{margin-top:10px}
+#offSheet .chip{text-align:left;background:none}
+#offSheet .chip.sel{border-color:var(--accent2)}
+#offSheet .chip.live{border-color:var(--ok);background:#12301f}
+</style>
+</head>
+<body>
+<header>
+  <nav class="site-nav" aria-label="Main navigation">
+    <a class="brand" href="/">FC // Freight Planner</a>
+    <a href="/">Download</a>
+    <a class="current" href="/mapper/" aria-current="page">HOTAS Mapper</a>
+  </nav>
+  <div class="hero">
+    <h1>Star Citizen <span>HOTAS Mapper</span></h1>
+    <p>Thrustmaster T.16000M FCS — one stick + one TWCS throttle, or two sticks. Detects your devices, lets you bind by pressing the control, and writes a profile Star Citizen can import.</p>
+  </div>
+</header>
+
+<main>
+  <div class="left">
+    <section class="panel">
+      <h2>Connected devices</h2>
+      <div id="noDev" class="dim">No joysticks detected. Plug both in, click this page, then press any button on each device.</div>
+      <div id="devices"></div>
+      <div id="lastInput" class="dim">Press or move a control to see what it is and what it's bound to.</div>
+    </section>
+
+    <section class="panel">
+      <h2>Import into Star Citizen</h2>
+      <ol>
+        <li>Click <b>Save profile</b>. Your browser downloads the XML file.</li>
+        <li>Move that file into your Star Citizen install at<br><code id="savePath">StarCitizen\LIVE\user\client\0\controls\mappings\</code></li>
+        <li>In game: <b>Options → Keybindings → Advanced Controls Customization → Control Profiles</b>, pick the profile, and set both joystick slots to load.</li>
+        <li>Or from the console (<code>~</code>): <code id="cmd">pp_rebindkeys layout_FCS_exported</code></li>
+        <li><span id="swapped">Stick and throttle swapped?</span> <code>pp_resortdevices joystick 1 2</code></li>
+      </ol>
+      <div class="dim">Actions you leave untouched keep the game's defaults. <i>Unbound</i> writes an empty bind, which removes the default from that device.</div>
+      <details><summary>Preview XML</summary><pre id="xml"></pre></details>
+    </section>
+  </div>
+
+  <section class="panel">
+    <div class="tabs" id="views"><button data-v="sheet" title="Your bindings drawn on the T.16000M FCS configuration sheet">Joystick sheet</button><button data-v="list">Action list</button></div>
+    <div class="toolbar">
+      <label>Profile <input type="text" id="profile" size="12" maxlength="24"></label>
+      <label title="What you fly with: a stick and a throttle, or a stick in each hand">Setup <select id="setup"></select></label>
+      <label title="A suggested layout for the way you fly">Guide <select id="guide"></select></label>
+      <button id="btnWizard" class="warn">▶ Start configuring</button>
+      <button id="btnApply" title="Fills in every control the way the guide suggests" hidden>Use this layout</button>
+      <button id="btnSave" class="primary">Save profile</button>
+      <span class="grow"></span>
+      <button id="btnLoad" title="Choose a Star Citizen profile XML file from this device">Upload profile…</button>
+      <button id="btnReset">Clear all</button>
+      <input type="file" id="file" accept=".xml,text/xml,application/xml" hidden>
+    </div>
+    <p class="dim" style="margin:8px 0 0">Profiles are processed in this browser only. Nothing is read from your game folders or uploaded to the Freight Planner server.</p>
+    <div class="toolbar" style="margin-top:12px">
+      <div class="tabs" id="tabs"></div>
+      <input type="search" id="search" placeholder="Filter actions…" class="grow">
+      <button id="btnAdd" title="Add an action that is not in the list">+ Custom action</button>
+    </div>
+    <div class="note" id="browserNote" hidden></div>
+    <div class="note" id="guideNote" hidden></div>
+    <div id="actions"></div>
+    <div id="sheetView">
+      <p class="dim">Each box shows what that control does in this profile. Press a control to light up its box; click a box to assign or remove actions.</p>
+      <div class="note" id="sheetNote" hidden></div>
+      <div id="pick" class="dev" hidden></div>
+      <div class="sheet-scroll"><div id="sheet">
+        <img src="./thrustmaster-t16000m-fcs.png" width="1479" height="1096" alt="Thrustmaster T.16000M FCS HOTAS configuration sheet by CMDR Bezdi">
+        <div id="boxes"></div>
+      </div></div>
+      <div id="offSheet" class="toolbar"></div>
+    </div>
+  </section>
+</main>
+
+<div id="wizard">
+  <span class="pulse"></span>
+  <div class="what"><span class="dim" id="wizCount"></span><br><b id="wizLabel"></b> <span class="dim" id="wizHint"></span><div id="wizHelp"></div><div id="wizSug"></div></div>
+  <button id="wizUse">Use suggestion</button>
+  <button id="wizSkip">Skip</button>
+  <button id="wizUnbind">Leave unbound</button>
+  <button id="wizStop">Stop</button>
+</div>
+
+<script src="actions.js"></script>
+<script>
+'use strict';
+/* ---------- Action database ----------
+   actions.js lists every joystick-bindable action of the installed game build (build-actions.js writes it).
+   CORE is the hand-picked essentials in the order the wizard walks them: [action, short label, plain-language help],
+   which replace the game's own name and description. */
+const CORE=[
+  ['spaceship_movement/v_pitch','Pitch','Tips the nose up or down, like nodding "yes". Normally the stick pulled back and pushed forward.'],
+  ['spaceship_movement/v_yaw','Yaw','Swings the nose left or right while the ship stays level, like shaking your head "no". Common choices: twisting the stick, or stick left/right.'],
+  ['spaceship_movement/v_roll','Roll','Tilts the ship over onto its side, like leaning your head towards a shoulder. Common choices: stick left/right, or the twist.'],
+  ['spaceship_movement/v_strafe_longitudinal','Throttle / strafe forward-back','Thrust forwards and backwards – your main speed control. Normally the throttle lever.'],
+  ['spaceship_movement/v_strafe_lateral','Strafe left-right','Slides the ship sideways without turning it. Often the mini-stick on the throttle, left/right.'],
+  ['spaceship_movement/v_strafe_vertical','Strafe up-down','Lifts or lowers the ship without tilting it – what you use to take off and land. Often the mini-stick, up/down.'],
+  ['spaceship_movement/v_ifcs_speed_limiter_abs','Speed limiter (absolute)','Caps your top speed by the position of a dial or slider: low for careful flying near a pad, high for covering distance.'],
+  ['spaceship_movement/v_accel_range_abs','Acceleration limiter (absolute)','Caps how hard the thrusters push, by the position of a dial or slider. Lower gives gentler, more precise movement.'],
+  ['spaceship_movement/v_afterburner','Boost','Hold for a burst of extra thrust and sharper turning. Drains the boost meter while held.'],
+  ['spaceship_movement/v_space_brake','Space brake','Hold to bring the ship to a stop as quickly as it can.'],
+  ['spaceship_movement/v_ifcs_vector_decoupling_toggle','Decoupled mode toggle','Coupled (normal): the ship slows itself down when you let go. Decoupled: it keeps drifting the way it was going, so you can point somewhere else while still moving.'],
+  ['spaceship_movement/v_ifcs_speed_limiter_toggle','Speed limiter toggle','Switches the speed cap on or off.'],
+  ['spaceship_movement/v_master_mode_cycle','Master mode cycle (SCM / NAV)','Switches between SCM (combat: weapons and shields work, lower top speed) and NAV (travel: full speed and quantum drive, but no weapons or shields).'],
+  ['spaceship_quantum/v_toggle_qdrive_engagement','Quantum drive engage','Starts the quantum jump once you are in NAV mode and pointing at your destination.'],
+  ['spaceship_movement/v_strafe_up','Strafe up','Button version of strafe up: full upward thrust while held.'],
+  ['spaceship_movement/v_strafe_down','Strafe down','Button version of strafe down: full downward thrust while held.'],
+  ['spaceship_movement/v_strafe_left','Strafe left','Button version of strafe left: slides the ship left while held.'],
+  ['spaceship_movement/v_strafe_right','Strafe right','Button version of strafe right: slides the ship right while held.'],
+  ['spaceship_movement/v_strafe_forward','Strafe forward','Button version of the throttle: full forward thrust while held.'],
+  ['spaceship_movement/v_strafe_back','Strafe back','Button version of the throttle: full reverse thrust while held.'],
+  ['spaceship_movement/v_strafe_trim_set_short','Throttle trim set (tap)','Tap to lock in the forward thrust you are holding, so the ship keeps it when you let go – a kind of cruise control.'],
+  ['spaceship_movement/v_strafe_trim_reset_long','Throttle trim reset (hold)','Hold to clear the locked-in thrust again.'],
+  ['spaceship_movement/v_ifcs_throttle_swap_mode','Cruise control toggle','Keeps your current forward speed without you holding the throttle.'],
+  ['spaceship_movement/v_ifcs_toggle_gforce_safety','G-force safety toggle','G-safe stops the ship turning hard enough to make your pilot black out. Off allows tighter manoeuvres at that risk.'],
+  ['spaceship_movement/v_ifcs_toggle_esp','ESP toggle','Enhanced Stick Precision: damps the stick when your nose is near a target, so small aiming corrections are easier.'],
+  ['spaceship_movement/v_vtol_toggle','VTOL toggle','Swivels the main thrusters downwards for hovering and vertical take-off, on ships that have VTOL.'],
+  ['spaceship_movement/v_toggle_landing_system','Landing gear toggle','Raises or lowers the landing gear.'],
+  ['spaceship_movement/v_autoland','Autoland','Lets the ship set itself down when you are hovering over a landing pad with the gear out.'],
+  ['spaceship_movement/v_atc_request','Request landing / ATC','Calls the landing services of a station or city to get a pad or hangar assigned – and to have the doors opened when you leave.'],
+  ['spaceship_docking/v_toggle_docking_request','Request docking','Asks a docking port for permission to dock. Used by larger ships that connect with a docking collar instead of landing.'],
+  ['spaceship_docking/v_dock_toggle_view','Docking camera toggle','Switches to the docking camera so you can line the collar up with the port.'],
+  ['spaceship_general/v_flightready','Flight ready','Starts everything – power, engines, shields – in one press, ready to fly.'],
+  ['spaceship_power/v_power_toggle','Power toggle (all)','Switches the whole ship on or off.'],
+  ['spaceship_power/v_power_toggle_thrusters','Engines power toggle','Switches only the engines on or off.'],
+  ['spaceship_power/v_power_toggle_shields','Shields power toggle','Switches only the shields on or off.'],
+  ['spaceship_power/v_power_toggle_weapons','Weapons power toggle','Switches only the weapons on or off.'],
+  ['lights_controller/v_lights','Headlights toggle','Turns the headlights on or off.'],
+  ['spaceship_general/v_toggle_all_doors','Doors open/close all','Opens or closes every door and ramp on the ship.'],
+  ['spaceship_general/v_toggle_all_doorlocks','Door locks toggle all','Locks or unlocks every door, so strangers cannot walk aboard.'],
+  ['seat_general/v_eject','Eject','Emergency exit: throws you out of the seat on ships with ejection seats. Keep it off any button you might hit by accident.'],
+  ['seat_general/v_toggle_missile_mode','Missile mode','Switches the HUD and controls over to missiles, so you can lock on and launch.'],
+  ['seat_general/v_toggle_scan_mode','Scan mode','Switches the HUD to scanning, for inspecting ships, rocks and signals.'],
+  ['seat_general/v_toggle_mining_mode','Mining mode','Brings up the mining laser controls on a mining ship.'],
+  ['seat_general/v_toggle_salvage_mode','Salvage mode','Brings up the salvage beam controls on a salvage ship.'],
+  ['seat_general/v_toggle_quantum_mode','Quantum mode','Brings up quantum travel: spools the drive and shows the destinations you can jump to.'],
+  ['spaceship_targeting/v_target_unlock','Unlock target','Drops your current target.'],
+  ['spaceship_targeting_advanced/v_target_under_reticle','Target under reticle','Locks on to whatever is under your crosshair.'],
+  ['spaceship_targeting_advanced/v_target_cycle_hostile_reset','Nearest hostile','Locks on to the closest enemy.'],
+  ['spaceship_targeting_advanced/v_target_cycle_hostile_fwd','Next hostile','Steps to the next enemy.'],
+  ['spaceship_targeting_advanced/v_target_cycle_attacker_reset','Nearest attacker','Locks on to the closest ship that is shooting at you.'],
+  ['spaceship_targeting_advanced/v_target_cycle_attacker_fwd','Next attacker','Steps to the next ship that is shooting at you.'],
+  ['spaceship_targeting_advanced/v_target_cycle_friendly_reset','Nearest friendly','Locks on to the closest friendly ship.'],
+  ['spaceship_targeting_advanced/v_target_cycle_friendly_fwd','Next friendly','Steps to the next friendly ship.'],
+  ['spaceship_targeting_advanced/v_target_cycle_all_fwd','Next target (all)','Steps forward through everything in range, friend or foe.'],
+  ['spaceship_targeting_advanced/v_target_cycle_all_back','Previous target (all)','Steps backward through everything in range, friend or foe.'],
+  ['spaceship_weapons/v_weapon_preset_attack','Fire weapons','Fires the weapon preset you have selected – your main guns. Normally the trigger.'],
+  ['spaceship_weapons/v_weapon_preset_next','Next weapon preset','Switches to the next weapon preset – a saved set of which guns fire together.'],
+  ['spaceship_weapons/v_weapon_preset_prev','Previous weapon preset','Switches to the previous weapon preset.'],
+  ['spaceship_missiles/v_weapon_toggle_launch_missile','Launch missile','Launches the armed missiles at your locked target, while in missile mode.'],
+  ['spaceship_missiles/v_weapon_cycle_missile_fwd','Next missile type','Changes which type of missile is armed (next type).'],
+  ['spaceship_missiles/v_weapon_cycle_missile_back','Previous missile type','Changes which type of missile is armed (previous type).'],
+  ['spaceship_missiles/v_weapon_increase_max_missiles','More missiles armed','Arms one more missile to launch in the same salvo.'],
+  ['spaceship_missiles/v_weapon_decrease_max_missiles','Fewer missiles armed','Arms one missile fewer.'],
+  ['spaceship_defensive/v_weapon_countermeasure_decoy_launch','Launch decoy','Drops decoys that tempt an incoming missile to chase them instead of you.'],
+  ['spaceship_defensive/v_weapon_countermeasure_noise_launch','Launch noise','Releases a cloud of noise that hides your ship and makes missile locks break.'],
+  ['spaceship_radar/v_invoke_ping','Radar ping','Sends out a pulse that reveals ships, rocks and signals around you – and tells others where you are.'],
+  ['spaceship_scanning/v_scanning_trigger_scan','Scan','Scans whatever you are pointing at, while in scan mode.'],
+  ['spaceship_mining/v_toggle_mining_laser_fire','Mining laser fire','Switches the mining laser on or off.'],
+  ['spaceship_mining/v_mining_throttle','Mining laser power (absolute)','Sets the mining laser strength by the position of a dial or slider – the control you ride while cracking a rock.'],
+  ['spaceship_view/v_view_cycle_fwd','Cycle camera view','Switches between the cockpit view and the outside cameras.'],
+  ['spaceship_view/v_view_freelook_mode','Freelook (hold)','Hold to look around the cockpit with the stick instead of steering.'],
+  ['spaceship_view/v_view_yaw','Look left-right','Turns your head left and right to look around the cockpit, on an axis such as a mini-stick.'],
+  ['spaceship_view/v_view_pitch','Look up-down','Tilts your head up and down to look around the cockpit, on an axis such as a mini-stick.'],
+  ['spaceship_view/v_view_yaw_left','Look left','Turns your head to the left while held. A hat switch suits the four look directions.'],
+  ['spaceship_view/v_view_yaw_right','Look right','Turns your head to the right while held.'],
+  ['spaceship_view/v_view_pitch_up','Look up','Tilts your head up while held.'],
+  ['spaceship_view/v_view_pitch_down','Look down','Tilts your head down while held.'],
+  ['player_input_optical_tracking/foip_pushtotalk','Push to talk','Hold to talk on your current voice channel.'],
+  ['player_input_optical_tracking/foip_pushtotalk_proximity','Push to talk (proximity)','Hold to talk to players who are close to you.'],
+];
+// The same for actions that only the playstyle guides use; the wizard does not walk these on its own.
+const EXTRA=[
+  ['seat_general/v_view_look_behind','Look behind','Shows what is behind your ship.'],
+  ['player_choice/pc_interaction_mode','Interaction mode','Brings up the pointer for clicking cockpit screens and switches. The game puts it on this button by default.'],
+  ['spaceship_view/v_view_zoom_in','Camera zoom in','Moves the outside camera closer to the ship.'],
+  ['spaceship_view/v_view_zoom_out','Camera zoom out','Moves the outside camera further from the ship.'],
+  ['spaceship_hud/v_starmap','Map','Opens the map, for picking a destination and setting a route.'],
+  ['spaceship_movement/v_atc_loading_area_request','Request cargo loading','Asks landing services for a cargo loading area instead of a landing pad.'],
+  ['spaceship_movement/v_toggle_jump_request','Request jump','Asks a jump point for permission to jump to the next star system.'],
+  ['spaceship_targeting_advanced/v_target_cycle_hostile_back','Previous hostile','Steps back to the previous enemy.'],
+  ['spaceship_targeting_advanced/v_target_cycle_subitem_fwd','Next sub-target','Steps through the parts of your locked target, so you can aim at one of them.'],
+  ['spaceship_targeting/v_target_pin_selected','Pin target','Marks your current target so it stays highlighted and you can come back to it.'],
+  ['spaceship_targeting/v_look_ahead_start_target_tracking','Target padlock','Keeps your head turned towards the locked target while you fly.'],
+  ['spaceship_weapons/v_weapon_gimbals_state_toggle','Gimbal lock toggle','Switches gimballed guns between locked straight ahead and free to follow your aim.'],
+  ['spaceship_power/v_engineering_assignment_weapons_increase','More power to weapons','Shifts ship power towards the guns.'],
+  ['spaceship_power/v_engineering_assignment_shields_increase','More power to shields','Shifts ship power towards the shields.'],
+  ['spaceship_power/v_engineering_assignment_engine_increase','More power to engines','Shifts ship power towards the engines.'],
+  ['spaceship_power/v_engineering_assignment_reset','Reset power','Puts the power split back to its default.'],
+];
+const coreOf=Object.fromEntries([...CORE.map((c,i)=>[...c,i+1]),...EXTRA].map(([key,label,help,core=0])=>[key,{label,help,core}]));
+// game: the name on the game's Keybindings screen where ours differs. ok=0: not an action of this game build.
+const ACTIONS=GAME_ACTIONS.map(([map,name,game,type,opt,desc])=>{
+  const key=map+'/'+name, c=coreOf[key];
+  return {grp:GAME_MAPS[map],map,name,key,type,opt,ok:1,core:c?c.core:0,label:c?c.label:game,help:c?c.help:desc||'',
+    game:c&&c.label.toLowerCase()!==game.toLowerCase()?game:''};
+});
+const KNOWN=new Set(ACTIONS.map(a=>a.key));
+const customAction=c=>({grp:'Custom',map:c.map,name:c.name,key:c.map+'/'+c.name,type:c.type,ok:0,core:0,label:c.label||c.name,help:'',game:''});
+const hay=a=>(a.label+' '+a.game+' '+a.grp+' '+a.key).toLowerCase();
+const MAP_ORDER=Object.keys(GAME_MAPS);
+// Where the actions ended up that this list once had under a name or action map the game does not use.
+const MOVED={'spaceship_general/v_lights':'lights_controller/v_lights','spaceship_general/v_eject':'seat_general/v_eject',
+  'spaceship_movement/v_ifcs_toggle_cruise_control':'spaceship_movement/v_ifcs_throttle_swap_mode','spaceship_movement/v_toggle_vtol':'spaceship_movement/v_vtol_toggle',
+  'spaceship_weapons/v_attack1':'spaceship_weapons/v_weapon_preset_attack','spaceship_weapons/v_attack2':'spaceship_weapons/v_weapon_preset_fire_guns1'};
+
+/* ---------- Hardware knowledge ---------- */
+const KINDS={
+  t16k:{name:'T.16000M',guid:'{B10A044F-0000-0000-0000-504944564944}',compact:['x','y','rotz','slider1'],
+    names:{x:'stick left/right',y:'stick fwd/back',rotz:'twist',slider1:'base slider',hat1:'thumb hat',
+      button1:'trigger',button2:'thumb centre',button3:'thumb left',button4:'thumb right'},
+    // Base buttons as they lie on the sheet: 5 6 7 over 10 9 8 on the left, 13 12 11 over 14 15 16 on the right.
+    btn:n=>({5:'left base, top left',6:'left base, top middle',7:'left base, top right',10:'left base, bottom left',9:'left base, bottom middle',8:'left base, bottom right',
+      13:'right base, top left',12:'right base, top middle',11:'right base, top right',14:'right base, bottom left',15:'right base, bottom middle',16:'right base, bottom right'})[n]||''},
+  twcs:{name:'TWCS Throttle',guid:'{B687044F-0000-0000-0000-504944564944}',compact:['x','y','z','rotx','roty','rotz','slider1','slider2'],
+    names:{x:'mini-stick X',y:'mini-stick Y',z:'throttle',rotz:'paddle rocker',slider1:'antenna dial',rotx:'pedals (TFRP)',roty:'pedals (TFRP)',
+      slider2:'pedals (TFRP)',hat1:'top hat',button1:'thumb button',button2:'front button by the dial',button3:'front button by the rocker',
+      button4:'rocker up',button5:'rocker down',button6:'mini-stick press'},
+    // The two thumb hats under the top one report as buttons: 7-10 the middle hat, 11-14 the bottom one.
+    btn:n=>n>=7&&n<=14?(n<11?'middle':'bottom')+' hat '+['up','right','down','left'][(n-7)%4]:''},
+  generic:{name:'Joystick',guid:'',compact:['x','y','z','rotx','roty','rotz','slider1','slider2'],names:{},btn:()=>''},
+};
+// A T.16000M set up for the left hand: the LEFT HANDED switch under its base mirrors where the base buttons lie.
+KINDS.t16kl={...KINDS.t16k,hw:'t16k',btn:n=>KINDS.t16k.btn(n).replace(/left|right/g,s=>s==='left'?'right':'left')};
+const hw=k=>KINDS[k].hw||k;
+const AXIS_NAMES=['x','y','z','rotx','roty','rotz','slider1','slider2'];
+const kindOf=id=>/b10a/i.test(id)?'t16k':/b687/i.test(id)?'twcs':'generic';
+function productOf(id){
+  const k=KINDS[kindOf(id)]; if(k.guid) return k.name+'  '+k.guid;
+  const m=id.match(/Vendor:\s*([0-9a-f]{4})\s*Product:\s*([0-9a-f]{4})/i)||id.match(/^([0-9a-f]{4})-([0-9a-f]{4})-/i);
+  const name=id.replace(/\s*\(.*$/,'').replace(/^[0-9a-f]{4}-[0-9a-f]{4}-/i,'').trim();
+  return m?`${name}  {${(m[2]+m[1]).toUpperCase()}-0000-0000-0000-504944564944}`:name;
+}
+// Chrome/Edge on Windows index axes by HID usage (X,Y,Z,Rx,Ry,Rz,Slider,Dial,Wheel,Hat); other browsers pack them.
+function defAxisMap(g){
+  const n=g.axes.length;
+  if(n>=10) return [...AXIS_NAMES,'','hat',...Array(n-10).fill('')];
+  const c=KINDS[kindOf(g.id)].compact; return Array.from({length:n},(_,i)=>c[i]||'');
+}
+const HAT=['up','up-right','right','down-right','down','down-left','left','up-left'];
+const hatDir=v=>Math.abs(v)>1.05?null:HAT[Math.round((v+1)*3.5)%8];
+
+/* Label boxes of thrustmaster-t16000m-fcs.png as [device, input(s), x, y, w, h, skew] in image pixels.
+   skew ±1 marks the slanted base-button grids. Button numbers follow Thrustmaster's DirectInput order. */
+const SHEET_SKEW=5.65;
+const SHEET=[
+  // TWCS finger side: antenna dial, paddles, pinky + ring buttons, rocker, mini-stick
+  ['twcs','slider1',68,44,139,67],['twcs','rotz',234,44,137,66],['twcs','rotz',376,44,140,66],
+  ['twcs','button2',68,328,138,67],['twcs','button3',68,421,138,67],
+  ['twcs','button4',309,351,140,66],['twcs','button5',310,421,139,67],
+  ['twcs','x y',500,367,139,49],['twcs','button6',500,439,140,49],
+  // TWCS thumb side: POV hat, middle hat, castle hat, thumb button
+  ['twcs','hat1_up',166,513,137,43],['twcs','hat1_left',34,552,130,57],['twcs','hat1_right',306,552,130,57],['twcs','hat1_down',166,605,136,42],
+  ['twcs','button7',166,664,137,38],['twcs','button10',33,703,128,56],['twcs','button8',308,703,128,56],['twcs','button9',166,756,137,43],
+  ['twcs','button11',166,813,137,45],['twcs','button14',34,853,127,57],['twcs','button12',307,853,129,56],['twcs','button13',166,907,137,41],
+  ['twcs','button1',164,965,140,65],
+  // T.16000M grip: hat, thumb buttons, trigger
+  ['t16k','hat1_up',955,47,138,45],['t16k','hat1_left',823,87,128,55],['t16k','hat1_right',1096,87,128,56],['t16k','hat1_down',954,142,139,40],
+  ['t16k','button3',740,231,141,67],['t16k','button4',1151,232,140,67],['t16k','button2',887,416,113,65],['t16k','button1',1158,401,138,67],
+  // T.16000M base: left grid, right grid, slider
+  ['t16k','button5',713,519,108,59,1],['t16k','button6',824,530,106,55,1],['t16k','button7',936,541,104,55,1],
+  ['t16k','button10',714,592,106,54,1],['t16k','button9',824,601,106,55,1],['t16k','button8',934,613,106,55,1],
+  ['t16k','button13',1082,543,106,53,-1],['t16k','button12',1193,530,105,53,-1],['t16k','button11',1303,521,105,53,-1],
+  ['t16k','button14',1083,612,105,54,-1],['t16k','button15',1192,600,106,58,-1],['t16k','button16',1303,590,106,55,-1],
+  ['t16k','slider1',793,883,139,67],
+];
+// Main axes the sheet has no box for.
+const OFF_SHEET=[['t16k','x'],['t16k','y'],['t16k','rotz'],['twcs','z']];
+/* The same for thrustmaster-t16000m-dual.png: the stick of the sheet above on the right, and its mirror image as the left-hand stick.
+   The mirrored stick keeps its hat directions and thumb buttons where they physically are; its base is numbered as the LEFT HANDED switch sets it. */
+const SHEET_DUAL=[
+  // Left stick grip: hat, thumb buttons, trigger
+  ['t16kl','hat1_up',386,47,138,45],['t16kl','hat1_left',255,87,128,56],['t16kl','hat1_right',528,87,128,55],['t16kl','hat1_down',386,142,139,40],
+  ['t16kl','button3',188,232,140,67],['t16kl','button4',598,231,141,67],['t16kl','button2',479,416,113,65],['t16kl','button1',183,401,138,67],
+  // Left stick base: left grid, right grid, slider
+  ['t16kl','button11',71,521,105,53,1],['t16kl','button12',181,530,105,53,1],['t16kl','button13',291,543,106,53,1],
+  ['t16kl','button16',70,590,106,55,1],['t16kl','button15',181,600,106,58,1],['t16kl','button14',291,612,105,54,1],
+  ['t16kl','button7',439,541,104,55,-1],['t16kl','button6',549,530,106,55,-1],['t16kl','button5',658,519,108,59,-1],
+  ['t16kl','button8',439,613,106,55,-1],['t16kl','button9',549,601,106,55,-1],['t16kl','button10',659,592,106,54,-1],
+  ['t16kl','slider1',547,883,139,67],
+  // Right stick grip: hat, thumb buttons, trigger
+  ['t16k','hat1_up',1026,47,136,45],['t16k','hat1_left',895,87,127,55],['t16k','hat1_right',1165,87,127,56],['t16k','hat1_down',1025,142,137,40],
+  ['t16k','button3',813,231,139,67],['t16k','button4',1220,232,139,67],['t16k','button2',958,416,112,65],['t16k','button1',1227,401,137,67],
+  // Right stick base: left grid, right grid, slider
+  ['t16k','button5',786,519,107,59,1],['t16k','button6',896,530,105,55,1],['t16k','button7',1007,541,103,55,1],
+  ['t16k','button10',787,592,105,54,1],['t16k','button9',896,601,105,55,1],['t16k','button8',1005,613,105,55,1],
+  ['t16k','button13',1152,543,105,53,-1],['t16k','button12',1262,530,104,53,-1],['t16k','button11',1371,521,104,53,-1],
+  ['t16k','button14',1153,612,104,54,-1],['t16k','button15',1261,600,105,58,-1],['t16k','button16',1371,590,105,55,-1],
+  ['t16k','slider1',865,883,138,67],
+];
+const OFF_SHEET_DUAL=[['t16k','x'],['t16k','y'],['t16k','rotz'],['t16kl','x'],['t16kl','y'],['t16kl','rotz']];
+/* What you fly with. kinds are the devices in joystick order (js1, js2) and devs what to call them;
+   label names them by hand where both are the same model. */
+const SETUPS={
+  hotas:{name:'Stick + throttle',kinds:['t16k','twcs'],devs:['stick','throttle'],img:'thrustmaster-t16000m-fcs.png',w:1479,h:1096,
+    alt:'Thrustmaster T.16000M FCS HOTAS configuration sheet by CMDR Bezdi',sheet:SHEET,off:OFF_SHEET},
+  dual:{name:'Two sticks',kinds:['t16k','t16kl'],devs:['right stick','left stick'],label:['Right stick','Left stick'],
+    img:'thrustmaster-t16000m-dual.png',w:1481,h:1096,alt:'Two Thrustmaster T.16000M sticks, after the FCS HOTAS configuration sheet by CMDR Bezdi',sheet:SHEET_DUAL,off:OFF_SHEET_DUAL,
+    note:'The left stick is drawn mirrored. Set the switch under its base to LEFT HANDED, so its base buttons are numbered as drawn. '+
+      'If the other stick lights up when you press a button, swap js1 and js2 under Connected devices.'},
+};
+
+/* ---------- Playstyle guides ----------
+   A suggested T.16000M FCS layout per kind of flying, in parts of [heading, why, [[action, device, input, invert], …]].
+   BASE is shared: the axes and the buttons worth keeping in one place whatever you fly.
+   With two sticks the same guides apply: the throttle's rows move to the left stick as ON_LEFT says,
+   and a heading or why given as a pair reads [with a throttle, with two sticks]. */
+// Thrust becomes the stick itself, boost its trigger, brake and countermeasures its thumb buttons. The hat and the slider keep their job,
+// and what sat on the thumb hats goes to the base: buttons 5-10 for what every guide shares, 11-14 for a guide's own four.
+const ON_LEFT={z:'y',y:'rotz',button14:'button2',button2:'button3',button3:'button4',button7:'button5',button9:'button6',button13:'button7',
+  button6:'button8',button5:'button9',button4:'button10',button8:'button11',button10:'button12',button11:'button13',button12:'button14'};
+const SPARE=['The free directions around master mode, quantum, brake and decoupled.',
+  'Four buttons of the outer block. The inner block holds master mode, quantum, decoupled, look behind and push to talk.'];
+const LOOK_HAT=[['spaceship_view/v_view_pitch_up','t16k','hat1_up'],['spaceship_view/v_view_pitch_down','t16k','hat1_down'],
+  ['spaceship_view/v_view_yaw_left','t16k','hat1_left'],['spaceship_view/v_view_yaw_right','t16k','hat1_right']];
+const BASE=[
+  ['Flight axes',['The same in every guide, so your hands learn one way of flying. The stick points the ship: pitch, yaw, and twist to roll. The throttle hand moves it: speed on the lever, sideways and up/down on the mini-stick. If a direction feels backwards in game, tick invert on that row.',
+    'The same in every guide, so your hands learn one way of flying. The right stick points the ship: pitch, yaw, and twist to roll. The left stick moves it: push it forward for speed, lean it to slide sideways, twist it to go up and down. If a direction feels backwards in game, tick invert on that row.'],[
+    ['spaceship_movement/v_pitch','t16k','y'],
+    ['spaceship_movement/v_yaw','t16k','x'],
+    ['spaceship_movement/v_roll','t16k','rotz'],
+    ['spaceship_movement/v_strafe_longitudinal','twcs','z',1],
+    ['spaceship_movement/v_strafe_lateral','twcs','x'],
+    ['spaceship_movement/v_strafe_vertical','twcs','y',1],
+    ['spaceship_movement/v_ifcs_speed_limiter_abs','twcs','slider1'],
+    ['spaceship_movement/v_accel_range_abs','t16k','slider1'],
+  ]],
+  ['Always in the same place','Shooting, boosting, braking, getting away and talking keep their button whatever you fly, so switching guide later costs you nothing here.',[
+    ['spaceship_weapons/v_weapon_preset_attack','t16k','button1'],
+    ['spaceship_movement/v_afterburner','twcs','button1'],
+    ['spaceship_movement/v_space_brake','twcs','button14'],
+    ['spaceship_movement/v_ifcs_vector_decoupling_toggle','twcs','button13'],
+    ['spaceship_movement/v_master_mode_cycle','twcs','button7'],
+    ['spaceship_quantum/v_toggle_qdrive_engagement','twcs','button9'],
+    ['spaceship_defensive/v_weapon_countermeasure_decoy_launch','twcs','button2'],
+    ['spaceship_defensive/v_weapon_countermeasure_noise_launch','twcs','button3'],
+    ['seat_general/v_view_look_behind','twcs','button6'],
+    ['player_input_optical_tracking/foip_pushtotalk','twcs','button4'],
+    ['player_input_optical_tracking/foip_pushtotalk_proximity','twcs','button5'],
+  ]],
+  ['Getting off the pad',['Once-per-flight switches sit on the stick base, where you will not hit them by accident. Interaction mode stays on the button the game gives it.',
+    'Once-per-flight switches sit on the base of the right stick, where you will not hit them by accident. Interaction mode stays on the button the game gives it.'],[
+    ['spaceship_general/v_flightready','t16k','button5'],
+    ['player_choice/pc_interaction_mode','t16k','button6'],
+    ['spaceship_movement/v_toggle_landing_system','t16k','button7'],
+    ['spaceship_movement/v_atc_request','t16k','button10'],
+  ]],
+];
+const GUIDES={
+  allround:{name:'All-round pilot',about:'A bit of everything: fly, land, defend yourself, and switch the ship over to scanning or mining.',parts:[...BASE,
+    [['Stick grip: basic combat','Right stick grip: basic combat'],'Enough to defend yourself: lock what you are aiming at and send a missile after it.',[
+      ['spaceship_missiles/v_weapon_toggle_launch_missile','t16k','button2'],
+      ['spaceship_targeting_advanced/v_target_under_reticle','t16k','button3'],
+      ['spaceship_targeting/v_target_unlock','t16k','button4'],
+    ]],
+    [['Stick hat: look around','Right stick hat: look around'],'Your thumb turns your head, which helps when landing and when something flies past.',LOOK_HAT],
+    [['Throttle top hat: who is out there','Left stick hat: who is out there'],['Jump to the nearest ship of each kind without letting go of the throttle.','Jump to the nearest ship of each kind without letting go of the stick.'],[
+      ['spaceship_targeting_advanced/v_target_cycle_attacker_reset','twcs','hat1_up'],
+      ['spaceship_targeting_advanced/v_target_cycle_hostile_reset','twcs','hat1_down'],
+      ['spaceship_targeting_advanced/v_target_cycle_friendly_reset','twcs','hat1_right'],
+      ['spaceship_targeting_advanced/v_target_cycle_all_fwd','twcs','hat1_left'],
+    ]],
+    [['Throttle thumb hats: speed, sensors, camera','Left stick base: speed, sensors, camera'],SPARE,[
+      ['spaceship_movement/v_ifcs_speed_limiter_toggle','twcs','button8'],
+      ['spaceship_movement/v_ifcs_throttle_swap_mode','twcs','button10'],
+      ['spaceship_radar/v_invoke_ping','twcs','button11'],
+      ['spaceship_view/v_view_cycle_fwd','twcs','button12'],
+    ]],
+    [['Stick base: landing and jobs','Right stick base: landing and jobs'],'The left block finishes the landing set. The right block switches the ship between its jobs and handles docking and doors.',[
+      ['spaceship_movement/v_autoland','t16k','button9'],
+      ['lights_controller/v_lights','t16k','button8'],
+      ['seat_general/v_toggle_missile_mode','t16k','button13'],
+      ['seat_general/v_toggle_scan_mode','t16k','button12'],
+      ['seat_general/v_toggle_mining_mode','t16k','button11'],
+      ['spaceship_docking/v_toggle_docking_request','t16k','button14'],
+      ['spaceship_docking/v_dock_toggle_view','t16k','button15'],
+      ['spaceship_general/v_toggle_all_doors','t16k','button16'],
+    ]],
+  ]},
+  pvp:{name:'PvP fighting',about:'Built around the fight: missiles and locks under the stick hand, power and target cycling on the hats.',parts:[...BASE,
+    [['Stick grip: missiles and lock','Right stick grip: missiles and lock'],'Your aiming hand does the shooting: lock the ship in your sights, switch to missiles, launch.',[
+      ['spaceship_missiles/v_weapon_toggle_launch_missile','t16k','button2'],
+      ['spaceship_targeting_advanced/v_target_under_reticle','t16k','button3'],
+      ['seat_general/v_toggle_missile_mode','t16k','button4'],
+    ]],
+    [['Stick hat: power','Right stick hat: power'],'Push power where the fight needs it: up for guns, left for shields, right for engines, down to reset.',[
+      ['spaceship_power/v_engineering_assignment_weapons_increase','t16k','hat1_up'],
+      ['spaceship_power/v_engineering_assignment_shields_increase','t16k','hat1_left'],
+      ['spaceship_power/v_engineering_assignment_engine_increase','t16k','hat1_right'],
+      ['spaceship_power/v_engineering_assignment_reset','t16k','hat1_down'],
+    ]],
+    [['Throttle top hat: choosing targets','Left stick hat: choosing targets'],'Step through the enemies, or jump straight to whoever is shooting you.',[
+      ['spaceship_targeting_advanced/v_target_cycle_attacker_reset','twcs','hat1_up'],
+      ['spaceship_targeting_advanced/v_target_cycle_hostile_reset','twcs','hat1_down'],
+      ['spaceship_targeting_advanced/v_target_cycle_hostile_fwd','twcs','hat1_right'],
+      ['spaceship_targeting_advanced/v_target_cycle_hostile_back','twcs','hat1_left'],
+    ]],
+    [['Throttle thumb hats: fight tools','Left stick base: fight tools'],SPARE,[
+      ['spaceship_targeting_advanced/v_target_cycle_subitem_fwd','twcs','button8'],
+      ['spaceship_targeting/v_target_unlock','twcs','button10'],
+      ['spaceship_weapons/v_weapon_gimbals_state_toggle','twcs','button11'],
+      ['spaceship_weapons/v_weapon_preset_next','twcs','button12'],
+    ]],
+    [['Stick base: set up between fights','Right stick base: set up between fights'],'Things you set before an engagement, not during one.',[
+      ['spaceship_movement/v_ifcs_speed_limiter_toggle','t16k','button9'],
+      ['spaceship_movement/v_ifcs_toggle_gforce_safety','t16k','button8'],
+      ['spaceship_missiles/v_weapon_cycle_missile_fwd','t16k','button13'],
+      ['spaceship_missiles/v_weapon_increase_max_missiles','t16k','button12'],
+      ['spaceship_missiles/v_weapon_decrease_max_missiles','t16k','button11'],
+      ['spaceship_movement/v_ifcs_toggle_esp','t16k','button14'],
+      ['spaceship_targeting/v_look_ahead_start_target_tracking','t16k','button15'],
+      ['spaceship_targeting/v_target_pin_selected','t16k','button16'],
+    ]],
+  ]},
+  hauling:{name:'Hauling',about:'Built around getting cargo there: landing, docking, doors and cameras first, with just enough to notice an attacker and get away.',parts:[...BASE,
+    [['Stick grip: easy cruising','Right stick grip: easy cruising'],'Long legs and tight hangars: check the outside view, hold a speed, cap it near the pad.',[
+      ['spaceship_view/v_view_cycle_fwd','t16k','button2'],
+      ['spaceship_movement/v_ifcs_speed_limiter_toggle','t16k','button3'],
+      ['spaceship_movement/v_ifcs_throttle_swap_mode','t16k','button4'],
+    ]],
+    [['Stick hat: look around','Right stick hat: look around'],'A loaded ship is long and blind, so look before you move.',LOOK_HAT],
+    [['Throttle top hat: keeping watch','Left stick hat: keeping watch'],'You are not hunting, but you want to know who is near and who is shooting.',[
+      ['spaceship_targeting_advanced/v_target_cycle_attacker_reset','twcs','hat1_up'],
+      ['spaceship_targeting/v_target_unlock','twcs','hat1_down'],
+      ['spaceship_targeting_advanced/v_target_cycle_all_fwd','twcs','hat1_right'],
+      ['spaceship_targeting_advanced/v_target_cycle_all_back','twcs','hat1_left'],
+    ]],
+    [['Throttle thumb hats: view and route','Left stick base: view and route'],SPARE,[
+      ['spaceship_view/v_view_zoom_in','twcs','button8'],
+      ['spaceship_view/v_view_zoom_out','twcs','button10'],
+      ['spaceship_hud/v_starmap','twcs','button11'],
+      ['spaceship_movement/v_vtol_toggle','twcs','button12'],
+    ]],
+    [['Stick base: docks, doors and cargo','Right stick base: docks, doors and cargo'],'The whole arrival routine in two blocks: the left finishes the landing set, the right is docking, cargo and doors.',[
+      ['spaceship_movement/v_autoland','t16k','button9'],
+      ['lights_controller/v_lights','t16k','button8'],
+      ['spaceship_docking/v_toggle_docking_request','t16k','button13'],
+      ['spaceship_docking/v_dock_toggle_view','t16k','button12'],
+      ['spaceship_movement/v_atc_loading_area_request','t16k','button11'],
+      ['spaceship_general/v_toggle_all_doors','t16k','button14'],
+      ['spaceship_general/v_toggle_all_doorlocks','t16k','button15'],
+      ['spaceship_movement/v_toggle_jump_request','t16k','button16'],
+    ]],
+  ]},
+};
+// What the game binds to stick buttons out of the box that would fire together with a guide's own choice for that button.
+const GUIDE_UNBIND=['spaceship_movement/v_strafe_up','spaceship_movement/v_strafe_down','spaceship_movement/v_strafe_left','spaceship_movement/v_strafe_right',
+  'spaceship_movement/v_autoland','spaceship_weapons/v_weapon_preset_next','spaceship_weapons/v_weapon_preset_prev','spaceship_missiles/v_weapon_cycle_missile_fwd','player_choice/pc_focus'];
+
+/* ---------- State ---------- */
+const LS='scmapper.v1';
+let state=Object.assign({profile:'FCS',binds:{},inverts:{},custom:[],dev:{},view:'sheet',guide:'',setup:'',kb:'Keyboard  {6F1D2B61-D5A0-11CF-BFC7-444553540000}'},
+  JSON.parse(localStorage.getItem(LS)||'{}'));
+const save=()=>localStorage.setItem(LS,JSON.stringify(state));
+for(const [from,to] of Object.entries(MOVED)) if(from in state.binds){ state.binds[to]??=state.binds[from]; delete state.binds[from]; }
+const allActions=()=>ACTIONS.concat(state.custom.filter(c=>!KNOWN.has(c.map+'/'+c.name)).map(customAction));
+let filter='all', listen=null, wizard=null, pads=[], padSig='', live={}, activeSig='', pick='';
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+const setup=()=>SETUPS[state.setup]||SETUPS.hotas;
+// Two sticks of one model report the same id, so each one after the first is numbered.
+const devKey=g=>{const n=pads.filter(p=>p.id===g.id&&p.index<g.index).length;return g.id+(n?' #'+(n+1):'');};
+function cfg(g){
+  const key=devKey(g);
+  if(!state.dev[key]){
+    const k=kindOf(g.id), used=Object.values(state.dev).map(d=>d.inst);
+    let inst=k==='t16k'?1:k==='twcs'?2:0;
+    if(!inst||used.includes(inst)) inst=[1,2,3,4].find(i=>!used.includes(i))||0;
+    state.dev[key]={inst,axisMap:defAxisMap(g)}; save();
+  }
+  return state.dev[key];
+}
+const padForInst=i=>pads.find(g=>cfg(g).inst===i);
+// Twin sticks cannot be told apart by model, so there the setup's order decides: js1 is the right one, js2 the left.
+const twin=k=>setup().kinds.filter(x=>hw(x)===hw(k)).length>1;
+const kindForInst=i=>{const g=padForInst(i), k=setup().kinds[i-1]||'generic';return !g||kindOf(g.id)===hw(k)?k:kindOf(g.id);};
+const instForKind=k=>{const g=!twin(k)&&pads.find(p=>kindOf(p.id)===k&&cfg(p).inst);return g?cfg(g).inst:setup().kinds.indexOf(k)+1;};
+// The setup's own name for the device at js<i> ("Left stick"), if it has one and that device is the one it expects there.
+const handForInst=i=>{const s=setup();return s.label&&kindForInst(i)===s.kinds[i-1]&&s.label[i-1]||'';};
+// The chosen guide with its steps resolved to this setup's joystick numbers, or null.
+function guide(){
+  const g=GUIDES[state.guide]; if(!g) return null;
+  const dual=setup()===SETUPS.dual, txt=t=>Array.isArray(t)?t[+dual]:t;
+  return {...g,steps:g.parts.flatMap(([part,why,rows])=>rows.map(([key,kind,inp,invert])=>{
+    if(dual&&kind==='twcs'){ kind='t16kl'; inp=ON_LEFT[inp]||inp; }
+    return {key,input:`js${instForKind(kind)}_${inp}`,invert,part:txt(part),why:txt(why)};
+  }))};
+}
+function useSuggestion(s){ state.binds[s.key]=s.input; if(s.invert) state.inverts[s.key]=true; save(); }
+function clearDoubles(g){
+  for(const k of GUIDE_UNBIND) if(!(k in state.binds)&&!g.steps.some(s=>s.key===k)) state.binds[k]=`js${instForKind('t16k')}_ `;
+  save();
+}
+function friendly(input){
+  const m=/^js(\d)_(.*)$/.exec(input); if(!m||!m[2].trim()) return '';
+  const k=KINDS[kindForInst(+m[1])], inp=m[2], hat=/^(hat\d)_(.+)$/.exec(inp), b=/^button(\d+)$/.exec(inp);
+  const what=hat?(k.names[hat[1]]||'hat')+' '+hat[2]:k.names[inp]||(b?k.btn(+b[1]):'');
+  const hand=handForInst(+m[1]);
+  return (hand?hand+' '+what.replace(/^stick /,''):k.name+' '+what).trim();
+}
+
+/* ---------- Rendering: devices ---------- */
+function renderDevices(){
+  $('noDev').hidden=pads.length>0;
+  $('devices').innerHTML=pads.map(g=>{
+    const c=cfg(g), hand=handForInst(c.inst);
+    return `<div class="dev" data-i="${g.index}">
+      <div class="dev-head"><span class="dev-name" title="${esc(g.id)}">${esc(g.id.replace(/\s*\(.*$/,''))}${hand?` <span class="dim">· ${esc(hand)}</span>`:''}</span>
+        <select data-inst>${[0,1,2,3,4].map(i=>`<option value="${i}"${c.inst===i?' selected':''}>${i?'js'+i:'ignore'}</option>`).join('')}</select></div>
+      <div class="btns">${g.buttons.map((_,i)=>`<span class="b">${i+1}</span>`).join('')}</div>
+      ${g.axes.map((_,i)=>`<div class="ax"><span class="dim mono">${i}</span><span class="bar"><i></i></span>
+        <select data-ax="${i}">${['',...AXIS_NAMES,'hat'].map(n=>`<option value="${n}"${(c.axisMap[i]||'')===n?' selected':''}>${n||'–'}</option>`).join('')}</select></div>`).join('')}
+      <div class="hat">hat: <span data-hat>centre</span></div></div>`;
+  }).join('');
+}
+$('devices').addEventListener('change',e=>{
+  const g=pads.find(p=>p.index==e.target.closest('.dev').dataset.i), c=cfg(g);
+  if(e.target.dataset.inst!==undefined){
+    const v=+e.target.value;
+    if(v) for(const d of Object.values(state.dev)) if(d!==c&&d.inst===v) d.inst=c.inst; // swap
+    c.inst=v;
+  } else c.axisMap[+e.target.dataset.ax]=e.target.value;
+  save(); renderDevices(); renderActions();
+});
+
+/* ---------- Rendering: actions ---------- */
+function usage(){const u={};for(const [k,v] of Object.entries(state.binds)) if(v.trim().length>4&&!v.endsWith('_ ')) (u[v]??=[]).push(k);return u;}
+function renderActions(){
+  const all=allActions(), q=$('search').value.trim().toLowerCase(), u=usage(), g=guide(), sug=Object.fromEntries((g?g.steps:[]).map(s=>[s.key,s]));
+  const isSet=a=>a.key in state.binds;
+  const counts={all:all.length,configured:all.filter(isSet).length}; counts.unconfigured=counts.all-counts.configured;
+  if(g) counts.guide=g.steps.length; else if(filter==='guide') filter='all';
+  $('tabs').innerHTML=Object.keys(counts).map(t=>
+    `<button data-t="${t}" class="${filter===t?'active':''}">${t[0].toUpperCase()+t.slice(1)} (${counts[t]})</button>`).join('');
+  $('btnApply').hidden=$('guideNote').hidden=!g;
+  if(g) $('guideNote').textContent=`${g.about} ${g.steps.filter(s=>state.binds[s.key]===s.input).length} of ${g.steps.length} controls are set as it suggests. `+
+    'Following it also unbinds what the game puts on those stick buttons by default (strafing, weapon presets, missile type, autoland, focus), so one press does one thing.';
+  let html='', grp='';
+  // The guide tab lists the guide's own actions in its order, under its headings.
+  for(const a of filter==='guide'?g.steps.map(s=>({...all.find(x=>x.key===s.key),grp:s.part,why:s.why})):all){
+    if(filter==='configured'&&!isSet(a)||filter==='unconfigured'&&isSet(a)) continue;
+    if(q&&!(hay(a)+' '+(state.binds[a.key]||'')).includes(q)) continue;
+    if(a.grp!==grp){grp=a.grp;html+=`<div class="grp">${esc(grp)}</div>${a.why?`<div class="help">${esc(a.why)}</div>`:''}`;}
+    const b=state.binds[a.key], cleared=b&&b.endsWith('_ '), s=sug[a.key];
+    const dup=b&&!cleared&&u[b].length>1?`<span class="dup" title="Also bound to: ${esc(u[b].filter(k=>k!==a.key).join(', '))}"> ⚠</span>`:'';
+    const chip=!b?'<span class="chip dim">default</span>'
+      :cleared?`<span class="chip cleared">unbound on ${b.slice(0,3)}</span>`
+      :`<span class="chip ${b.slice(0,3)}">${esc(b)}${dup}<small>${esc(friendly(b))}</small></span>`;
+    html+=`<div class="row${listen&&listen.key===a.key?' listening':''}" data-k="${esc(a.key)}">
+      <div><span class="lbl">${esc(a.label)}</span><span class="tag ${a.type}">${a.type}</span>${a.ok?'':`<span class="tag unv" title="Not an action of Star Citizen ${esc(GAME_BUILD)} – check it appears in game after importing">unverified</span>`}
+        ${a.help?`<div class="help">${esc(a.help)}</div>`:''}<div class="id">${esc(a.map)} · ${esc(a.name)}${a.game?' · in game: '+esc(a.game):''}</div>
+        ${!s?'':b===s.input?'<div class="sug ok">✓ as the guide suggests</div>'
+          :`<div class="sug">Guide: ${esc(friendly(s.input))} <span class="mono">${esc(s.input)}</span> <button class="sm" data-a="sug">Use</button></div>`}</div>
+      ${chip}
+      <div class="acts">${a.type==='axis'&&a.opt?`<label title="Writes invert=&quot;1&quot; for this axis"><input type="checkbox" data-a="inv"${state.inverts[a.key]?' checked':''}> invert</label>`:''}
+        <button class="sm" data-a="bind">${listen&&listen.key===a.key?'Cancel':'Bind'}</button>
+        <button class="sm" data-a="type" title="Type the input by hand, e.g. js1_hat1_up">✎</button>
+        <button class="sm" data-a="unbind" title="Remove the game's default binding for this action">Unbind</button>
+        <button class="sm" data-a="del" title="Back to game default (not written to the profile)"${b?'':' disabled'}>✕</button></div></div>`;
+  }
+  $('actions').innerHTML=html||'<p class="dim">Nothing matches.</p>';
+  $('xml').textContent=buildXml();
+  $('cmd').textContent='pp_rebindkeys '+fileName().replace(/\.xml$/,'');
+  renderSheet();
+}
+$('tabs').onclick=e=>{if(e.target.dataset.t){filter=e.target.dataset.t;renderActions();}};
+$('search').oninput=renderActions;
+$('actions').addEventListener('click',e=>{
+  const act=e.target.dataset.a, row=e.target.closest('.row'); if(!act||!row) return;
+  const key=row.dataset.k, a=allActions().find(x=>x.key===key);
+  if(act==='bind'){ if(listen&&listen.key===key) stopListen(); else {wizard=null;startListen(a);} }
+  else if(act==='unbind'){ const d=setup().devs, i=prompt(`Unbind the default on which joystick? (1 = ${d[0]}, 2 = ${d[1]})`,'1'); if(/^[1-8]$/.test(i||'')) setBind(key,`js${i}_ `); }
+  else if(act==='del'){ delete state.binds[key]; delete state.inverts[key]; commit(); }
+  else if(act==='type'){ const v=prompt('Input for "'+a.label+'" (js1_button3, js2_z, js1_hat1_up, js2_rotz …)',state.binds[key]||'js1_');
+    if(v&&/^js[1-8]_[a-z0-9_]+$/.test(v.trim())) setBind(key,v.trim()); else if(v) alert('That does not look like a Star Citizen joystick input.'); }
+  else if(act==='inv'){ if(e.target.checked) state.inverts[key]=true; else delete state.inverts[key]; commit(); }
+  else if(act==='sug'){ useSuggestion(guide().steps.find(s=>s.key===key)); renderActions(); }
+});
+function commit(){save();renderActions();}
+function setBind(key,input){state.binds[key]=input;commit();}
+
+/* ---------- Rendering: sheet ---------- */
+const pc=(v,of)=>(v/of*100).toFixed(3)+'%';
+function renderSheet(){
+  const on=state.view==='sheet';
+  document.body.classList.toggle('sheet-on',on);
+  $('views').querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.v===state.view));
+  activeSig='';
+  if(!on) return;
+  const all=allActions(), u=usage(), seen=new Set(), s=setup();
+  const labels=i=>(u[i]||[]).map(k=>all.find(a=>a.key===k)?.label||k);
+  $('boxes').innerHTML=s.sheet.map(([kind,ins,x,y,w,h,skew])=>{
+    const inp=ins.split(' ').map(i=>`js${instForKind(kind)}_${i}`), id=inp.join(' '), l=inp.flatMap(labels);
+    const off=skew?w*Math.tan(SHEET_SKEW*Math.PI/180):0;
+    inp.forEach(i=>seen.add(i));
+    return `<button class="box${pick===id?' sel':''}" data-in="${id}"
+      title="${esc(inp.map(i=>i+' – '+friendly(i)+(labels(i).length?': '+labels(i).join(', '):'')).join('\n'))}"
+      style="left:${pc(x,s.w)};top:${pc(y+off/2,s.h)};width:${pc(w,s.w)};height:${pc(h-off,s.h)}${skew?`;transform:skewY(${skew*SHEET_SKEW}deg)`:''}">${
+      l.length?l.map(t=>`<span>${esc(t)}</span>`).join(''):`<i>${esc(ins)}</i>`}</button>`;
+  }).join('');
+  // Shrink labels that do not fit their box.
+  for(const b of $('boxes').children) for(let k=1;k>.65&&b.scrollHeight>b.clientHeight+1;) b.style.setProperty('--k',k-=.07);
+  const rest=[...new Set([...s.off.map(([k,i])=>`js${instForKind(k)}_${i}`),...Object.keys(u)])].filter(i=>!seen.has(i));
+  $('offSheet').innerHTML='<span class="dim">Not pictured:</span>'+rest.map(i=>
+    `<button class="chip ${esc(i.slice(0,3))}${pick===i?' sel':''}" data-in="${esc(i)}">${esc(i)}<small>${esc([friendly(i),labels(i).join(', ')].filter(Boolean).join(' → '))}</small></button>`).join('');
+  renderPick();
+}
+// What one input can be assigned to, narrowed to the actions containing q.
+function pickOpts(inp,q){
+  const axis=AXIS_NAMES.includes(inp.slice(4)); let grp='', opts='', n=0;
+  for(const a of allActions()){
+    if((a.type==='axis')!==axis||state.binds[a.key]===inp||q&&!hay(a).includes(q)) continue;
+    if(a.grp!==grp){opts+=(grp?'</optgroup>':'')+`<optgroup label="${esc(a.grp)}">`;grp=a.grp;}
+    const b=state.binds[a.key]; n++;
+    opts+=`<option value="${esc(a.key)}">${esc(a.label)}${b&&!b.endsWith('_ ')?' ('+esc(b)+')':''}</option>`;
+  }
+  return `<option value="">+ ${q?n+' matching':'Assign '+(axis?'an axis':'an action')}…</option>${opts}${grp?'</optgroup>':''}`;
+}
+function renderPick(){
+  $('pick').hidden=!pick; if(!pick) return;
+  const all=allActions(), u=usage();
+  $('pick').innerHTML=pick.split(' ').map((inp,n)=>
+    `<div class="toolbar" data-to="${esc(inp)}"><b class="mono">${esc(inp)}</b><span class="dim">${esc(friendly(inp))}</span>
+      ${(u[inp]||[]).map(k=>{const a=all.find(x=>x.key===k);
+        return `<span class="chip ${esc(inp.slice(0,3))}" title="${esc(a?.help||'')}">${esc(a?.label||k)} <button class="sm" data-rm="${esc(k)}" title="Back to game default">✕</button></span>`;}).join('')}
+      <input type="search" placeholder="Filter…" title="Narrow the choices, e.g. look, missile, power"><select>${pickOpts(inp,'')}</select>
+      ${n?'':'<span class="grow"></span><button class="sm" data-close>Close</button>'}</div>`).join('');
+}
+// The sheet image and the wording that belong to the chosen setup.
+function showSetup(){
+  const s=setup(), img=document.querySelector('#sheet img'), d=s.devs;
+  $('setup').value=s===SETUPS.dual?'dual':'hotas';
+  // The boxes wait for their own picture, so they never sit on the other setup's.
+  if(!img.src.endsWith('/'+s.img)){
+    $('boxes').style.visibility='hidden'; img.onload=img.onerror=()=>{$('boxes').style.visibility='';};
+    Object.assign(img,{src:s.img,width:s.w,height:s.h,alt:s.alt});
+  }
+  $('sheetNote').hidden=!s.note; $('sheetNote').textContent=s.note||'';
+  $('swapped').textContent=d[0][0].toUpperCase()+d[0].slice(1)+' and '+d[1]+' swapped?';
+}
+$('setup').innerHTML=Object.entries(SETUPS).map(([id,s])=>`<option value="${id}">${esc(s.name)}</option>`).join('');
+$('setup').onchange=e=>{state.setup=e.target.value;pick='';showSetup();commit();};
+$('views').onclick=e=>{if(e.target.dataset.v){state.view=e.target.dataset.v;commit();}};
+$('sheetView').addEventListener('click',e=>{
+  const b=e.target.closest('[data-in]'), rm=e.target.dataset.rm;
+  if(b){pick=pick===b.dataset.in?'':b.dataset.in;renderSheet();}
+  else if(rm){delete state.binds[rm];delete state.inverts[rm];commit();}
+  else if('close' in e.target.dataset){pick='';renderSheet();}
+});
+$('pick').addEventListener('change',e=>{if(e.target.tagName==='SELECT'&&e.target.value) setBind(e.target.value,e.target.closest('[data-to]').dataset.to);});
+$('pick').addEventListener('input',e=>{
+  if(e.target.type!=='search') return;
+  const row=e.target.closest('[data-to]'); row.querySelector('select').innerHTML=pickOpts(row.dataset.to,e.target.value.trim().toLowerCase());
+});
+
+/* ---------- Listening / wizard ---------- */
+function startListen(a){
+  listen={key:a.key,type:a.type,armAt:performance.now()+(wizard?700:150),base:null,skipAxis:listen&&listen.gotAxis};
+  renderActions(); showWizardBar(a);
+  document.querySelector('.row.listening')?.scrollIntoView({block:'center',behavior:'smooth'});
+}
+function stopListen(){listen=null;wizard=null;$('wizard').classList.remove('on');renderActions();}
+function showWizardBar(a){
+  $('wizard').classList.add('on');
+  $('wizCount').textContent=wizard?`Step ${wizard.i+1} of ${wizard.q.length}`:'Listening';
+  $('wizLabel').textContent=a.label;
+  $('wizHint').textContent=a.type==='axis'?'— move the axis you want fully one way':'— press the button or hat direction you want';
+  $('wizHelp').textContent=a.help;
+  const s=wizard?.sug[a.key];
+  $('wizSug').textContent=s?`Guide: ${friendly(s.input)} (${s.input})`:'';
+  $('wizSkip').hidden=$('wizUnbind').hidden=!wizard; $('wizUse').hidden=!s;
+}
+function captured(input,axisId){
+  const key=listen.key, s=wizard?.sug[key]; state.binds[key]=input; if(s&&s.invert&&s.input===input) state.inverts[key]=true; save();
+  if(wizard){ listen.gotAxis=axisId; wizNext(); } else stopListen();
+}
+function wizNext(){
+  wizard.i++;
+  if(wizard.i>=wizard.q.length){ stopListen(); return; }
+  startListen(wizard.q[wizard.i]);
+}
+$('btnWizard').onclick=()=>{
+  if(!pads.some(g=>cfg(g).inst)){alert(`No joystick detected yet. Plug in the ${setup().devs.join(' and ')} and press a button on each.`);return;}
+  // The wizard walks the chosen guide, else the essentials in CORE order (or whatever the search box is narrowed to).
+  const s=$('search').value.trim().toLowerCase(), g=!s&&guide(), all=allActions();
+  const q=(g?g.steps.map(x=>all.find(a=>a.key===x.key)):all.filter(a=>s?hay(a).includes(s):a.core).sort((a,b)=>s?0:a.core-b.core)).filter(a=>!(a.key in state.binds));
+  if(!q.length){alert(s?'Every action matching the filter is already configured.':(g?'Everything in this guide is':'The essentials are all')+' configured. Use Bind on a row to change one or to set up anything else.');return;}
+  if(g) clearDoubles(g);
+  listen=null; wizard={q,i:0,sug:g?Object.fromEntries(g.steps.map(x=>[x.key,x])):{}}; startListen(q[0]);
+};
+$('wizUse').onclick=()=>{useSuggestion(wizard.sug[wizard.q[wizard.i].key]);wizNext();};
+$('guide').innerHTML='<option value="">No guide – the essentials</option>'+Object.entries(GUIDES).map(([id,g])=>`<option value="${id}">${esc(g.name)}</option>`).join('');
+$('guide').value=state.guide;
+$('guide').onchange=e=>{state.guide=e.target.value;filter=state.guide?'guide':'all';commit();};
+$('btnApply').onclick=()=>{
+  const g=guide();
+  if(Object.keys(state.binds).length&&!confirm(`Replace the current bindings with the ${g.name} layout?`)) return;
+  state.binds={}; state.inverts={}; g.steps.forEach(useSuggestion); clearDoubles(g); commit();
+};
+$('wizSkip').onclick=()=>wizNext();
+$('wizUnbind').onclick=()=>{const a=wizard.q[wizard.i];state.binds[a.key]=`js${a.type==='axis'?2:1}_ `;save();wizNext();};
+$('wizStop').onclick=stopListen;
+addEventListener('keydown',e=>{if(e.key==='Escape'&&listen)stopListen();});
+
+/* ---------- Gamepad polling ---------- */
+function onInput(inst,inp,isAxis,axisId){
+  if(!inst) return;
+  const input=`js${inst}_${inp}`;
+  if(listen){
+    if(performance.now()<listen.armAt) return;
+    if((listen.type==='axis')===!!isAxis) captured(input,axisId);
+    return;
+  }
+  if(isAxis) return;
+  showLast(input);
+}
+function showLast(input){
+  const all=allActions(), hits=Object.entries(state.binds).filter(([,v])=>v===input).map(([k])=>all.find(a=>a.key===k)?.label||k);
+  $('lastInput').innerHTML=`<b>${esc(input)}</b> <span class="dim">${esc(friendly(input))}</span><br>`+
+    (hits.length?'→ '+hits.map(esc).join(', '):'<span class="dim">not bound in this profile</span>');
+  $('lastInput').classList.remove('dim');
+}
+function poll(now){
+  pads=[...navigator.getGamepads()].filter(Boolean);
+  const sig=pads.map(g=>g.index+g.id+g.axes.length).join('|');
+  if(sig!==padSig){
+    padSig=sig; live={};
+    // Two T.16000Ms and no throttle is the dual setup, as long as no setup has been chosen by hand.
+    const n=k=>pads.filter(g=>kindOf(g.id)===k).length;
+    if(!state.setup&&n('t16k')>1&&!n('twcs')){ state.setup='dual'; save(); showSetup(); }
+    renderDevices(); renderActions();
+  }
+  const active=[];
+  if(listen&&listen.type==='axis'&&!listen.base&&now>=listen.armAt) listen.base=Object.fromEntries(pads.map(g=>[g.index,[...g.axes]]));
+  for(const g of pads){
+    const c=cfg(g), st=live[g.index]??={btn:[],hat:null,ax:[],moved:[]}, el=$('devices').querySelector(`[data-i="${g.index}"]`);
+    const bEls=el?.querySelectorAll('.b'), aEls=el?.querySelectorAll('.bar i');
+    g.buttons.forEach((b,i)=>{
+      if(b.pressed!==!!st.btn[i]) bEls?.[i]?.classList.toggle('on',b.pressed);
+      if(b.pressed&&!st.btn[i]) onInput(c.inst,`button${i+1}`);
+      st.btn[i]=b.pressed; if(b.pressed&&c.inst) active.push(`js${c.inst}_button${i+1}`);
+    });
+    g.axes.forEach((v,i)=>{
+      const n=c.axisMap[i];
+      if(aEls?.[i]) aEls[i].style.left=`calc(${(Math.max(-1,Math.min(1,v))+1)*50}% - 1px)`;
+      if(n==='hat'){
+        // A pad that has not sent a report yet reads 0 on every axis, which would decode as "down".
+        if(Math.abs(v)>1.05) st.hatReady=true;
+        const d=st.hatReady?hatDir(v):null;
+        if(d!==st.hat){ st.hat=d; const h=el?.querySelector('[data-hat]'); if(h) h.textContent=d||'centre';
+          if(d&&!d.includes('-')) onInput(c.inst,'hat1_'+d); }
+        if(d&&c.inst) active.push(`js${c.inst}_hat1_${d}`);
+        return;
+      }
+      if(!n) return;
+      if(st.ax[i]===undefined||Math.abs(v-st.ax[i])>0.03){ if(st.ax[i]!==undefined){st.moved[i]=now; if(!listen&&c.inst&&Math.abs(v-st.ax[i])>0.2) showLast(`js${c.inst}_${n}`);} st.ax[i]=v; }
+      if(now-(st.moved[i]||-1e9)<350&&c.inst) active.push(`js${c.inst}_${n}`);
+      const id=g.index+':'+i, base=listen?.base?.[g.index]?.[i];
+      if(base!==undefined&&id!==listen.skipAxis&&Math.abs(v-base)>0.5) onInput(c.inst,n,true,id);
+    });
+  }
+  const as=active.join(',');
+  if(as!==activeSig){ activeSig=as;
+    document.querySelectorAll('#actions .row').forEach(r=>r.classList.toggle('live',!listen&&active.includes(state.binds[r.dataset.k])));
+    // A diagonal hat press lights both of its boxes.
+    const on=new Set(active.flatMap(a=>{const m=/^(js\d_hat\d_)(\w+)-(\w+)$/.exec(a);return m?[m[1]+m[2],m[1]+m[3]]:[a];}));
+    document.querySelectorAll('#sheetView [data-in]').forEach(b=>b.classList.toggle('live',b.dataset.in.split(' ').some(i=>on.has(i))));
+  }
+  requestAnimationFrame(poll);
+}
+
+/* ---------- XML out / in ---------- */
+const fileName=()=>`layout_${state.profile||'FCS'}_exported.xml`;
+function buildXml(){
+  const all=allActions(), name=esc(state.profile||'FCS'), byMap={}, insts=new Set([1,2]);
+  for(const [k,v] of Object.entries(state.binds)){
+    const [map,act]=k.split('/'); (byMap[map]??=[]).push([act,v]); insts.add(+v[2]);
+  }
+  const list=[...insts].sort();
+  const opts=list.map(i=>{
+    const g=padForInst(i), prod=g?productOf(g.id):KINDS[kindForInst(i)].name+'  '+KINDS[kindForInst(i)].guid;
+    const inv=[...new Set(all.filter(a=>a.opt&&state.inverts[a.key]&&state.binds[a.key]?.startsWith(`js${i}_`)).map(a=>a.opt))].map(o=>`  <${o} invert="1"/>\n`).join('');
+    return ` <options type="joystick" instance="${i}" Product="${esc(prod)}"`+(inv?`>\n${inv} </options>`:'/>');
+  }).join('\n');
+  const maps=Object.keys(byMap).sort((a,b)=>(MAP_ORDER.indexOf(a)+99)%99-(MAP_ORDER.indexOf(b)+99)%99||a.localeCompare(b));
+  return `<ActionMaps version="1" optionsVersion="2" rebindVersion="2" profileName="${name}">
+ <CustomisationUIHeader label="${name}" description="" image="">
+  <devices>
+   <keyboard instance="1"/>
+   <mouse instance="1"/>
+${list.map(i=>`   <joystick instance="${i}"/>`).join('\n')}
+  </devices>
+  <categories>
+   <category label="@ui_CCSeatGeneral"/>
+   <category label="@ui_CCSpaceFlight"/>
+  </categories>
+ </CustomisationUIHeader>
+ <options type="keyboard" instance="1" Product="${esc(state.kb)}"/>
+${opts}
+ <modifiers />
+${maps.map(m=>` <actionmap name="${esc(m)}">\n${byMap[m].sort((a,b)=>a[0].localeCompare(b[0])).map(([a,v])=>
+`  <action name="${esc(a)}">\n   <rebind input="${esc(v)}"/>\n  </action>`).join('\n')}\n </actionmap>`).join('\n')}
+</ActionMaps>
+`;
+}
+function importXml(text){
+  const doc=new DOMParser().parseFromString(text,'application/xml');
+  if(doc.querySelector('parsererror')||!doc.querySelector('actionmap')) throw new Error('No <actionmap> entries found – is this a Star Citizen control profile?');
+  const known=allActions(), binds={}, inverts={}; let n=0;
+  doc.querySelectorAll('actionmap').forEach(m=>m.querySelectorAll('action').forEach(a=>{
+    const rb=[...a.querySelectorAll('rebind')].map(r=>r.getAttribute('input')||'').find(i=>/^js\d_/.test(i)); if(!rb) return;
+    const key=m.getAttribute('name')+'/'+a.getAttribute('name'); binds[key]=rb; n++;
+    if(!known.some(k=>k.key===key)){
+      const type=AXIS_NAMES.includes(rb.slice(4))?'axis':'button';
+      state.custom.push({map:m.getAttribute('name'),name:a.getAttribute('name'),type}); known.push({key});
+    }
+  }));
+  doc.querySelectorAll('options[type=joystick]').forEach(o=>[...o.children].forEach(ch=>{
+    if(ch.getAttribute('invert')!=='1') return;
+    for(const a of ACTIONS) if(a.opt===ch.tagName&&binds[a.key]?.startsWith('js'+o.getAttribute('instance'))) inverts[a.key]=true;
+  }));
+  const kb=doc.querySelector('options[type=keyboard]')?.getAttribute('Product'); if(kb) state.kb=kb;
+  const pn=(doc.querySelector('[profileName]')?.getAttribute('profileName')||'').replace(/[^\w-]/g,'');
+  if(pn&&pn!=='default') state.profile=pn;
+  state.binds=binds; state.inverts=inverts; $('profile').value=state.profile; commit();
+  return n;
+}
+$('btnLoad').onclick=()=>$('file').click();
+$('file').onchange=async e=>{
+  const f=e.target.files[0]; if(!f) return; e.target.value='';
+  if(Object.keys(state.binds).length&&!confirm('Replace the current bindings with the ones in '+f.name+'?')) return;
+  try{ alert(importXml(await f.text())+' joystick bindings loaded.'); }catch(err){ alert(err.message); }
+};
+$('btnReset').onclick=()=>{ if(confirm('Remove every binding from this profile?')){state.binds={};state.inverts={};commit();} };
+$('btnAdd').onclick=()=>{
+  const v=prompt('Action as actionmap/action_name, e.g. spaceship_movement/v_toggle_vtol'); if(!v) return;
+  const m=/^([a-z0-9_]+)\/([a-z0-9_]+)$/i.exec(v.trim()); if(!m){alert('Use the form actionmap/action_name.');return;}
+  if(allActions().some(a=>a.key===m[0])){alert('That action is already in the list.');return;}
+  state.custom.push({map:m[1],name:m[2],type:confirm('Is this an axis action?\nOK = axis, Cancel = button')?'axis':'button'});
+  $('search').value=m[2]; commit();
+};
+$('profile').value=state.profile;
+$('profile').oninput=e=>{state.profile=e.target.value.replace(/[^\w-]/g,'');commit();};
+$('btnSave').onclick=async()=>{
+  if(!Object.keys(state.binds).length){alert('Nothing is bound yet.');return;}
+  const xml=buildXml();
+  const a=document.createElement('a');
+  const url=URL.createObjectURL(new Blob([xml],{type:'application/xml'}));
+  a.href=url; a.download=fileName(); document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+};
+
+/* ---------- Boot ---------- */
+if(!navigator.getGamepads){ $('browserNote').hidden=false; $('browserNote').textContent='This browser has no Gamepad API – device detection will not work. Use Chrome or Edge.'; }
+else{
+  if(!/Chrome\//.test(navigator.userAgent)){ $('browserNote').hidden=false;
+    $('browserNote').textContent='Axis and hat detection is tuned for Chrome/Edge on Windows. In other browsers check the axis names in the device panel before binding.'; }
+  requestAnimationFrame(poll);
+}
+showSetup();
+renderActions();
+</script>
+</body>
+</html>

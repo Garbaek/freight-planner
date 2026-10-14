@@ -1,3 +1,6 @@
+using System.ComponentModel;
+using System.Diagnostics;
+
 namespace FreightCopilot;
 
 public sealed class AccountForm : Form
@@ -11,7 +14,6 @@ public sealed class AccountForm : Form
     private readonly Button _submit = new() { Text = "Sign in", AutoSize = true };
     private readonly Button _switchMode = new() { Text = "Create an account", AutoSize = true };
     private readonly Label _displayLabel = new() { Text = "Display name", AutoSize = true, Anchor = AnchorStyles.Left };
-    private bool _registering;
 
     public AuthSession? Session { get; private set; }
     public string ApiBaseUrl => _server.Text.Trim();
@@ -43,10 +45,10 @@ public sealed class AccountForm : Form
 
         _submit.Click += async (_, _) => await SubmitAsync();
         _resend.Click += async (_, _) => await ResendAsync();
-        _switchMode.Click += (_, _) => SetMode(!_registering);
+        _switchMode.Click += (_, _) => OpenRegistrationPage();
         AcceptButton = _submit;
         CancelButton = buttons.Controls.OfType<Button>().First(x => x.DialogResult == DialogResult.Cancel);
-        SetMode(false);
+        ShowSignInMode();
     }
 
     private static void AddRow(TableLayoutPanel panel, int row, Control label, Control value)
@@ -56,15 +58,36 @@ public sealed class AccountForm : Form
         panel.Controls.Add(value, 1, row);
     }
 
-    private void SetMode(bool registering)
+    private void ShowSignInMode()
     {
-        _registering = registering;
-        if (registering) _resend.Visible = false;
-        _displayLabel.Visible = _displayName.Visible = registering;
-        _submit.Text = registering ? "Register" : "Sign in";
-        _switchMode.Text = registering ? "I already have an account" : "Create an account";
-        _message.Text = registering ? "Use at least 12 characters for the password. A verification link is emailed to you." : "";
-        _message.ForeColor = registering ? SystemColors.GrayText : Color.Firebrick;
+        _displayLabel.Visible = _displayName.Visible = false;
+        _submit.Text = "Sign in";
+        _switchMode.Text = "Create account on website";
+        _message.Text = "New accounts use privacy-friendly ALTCHA verification on the website.";
+        _message.ForeColor = SystemColors.GrayText;
+    }
+
+    private void OpenRegistrationPage()
+    {
+        if (!Uri.TryCreate(_server.Text.Trim().TrimEnd('/') + "/account", UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttps && !(uri.IsLoopback && uri.Scheme == Uri.UriSchemeHttp)))
+        {
+            _message.ForeColor = Color.Firebrick;
+            _message.Text = "Use a valid HTTPS server URL first.";
+            return;
+        }
+        if (!string.IsNullOrWhiteSpace(_email.Text))
+            uri = new UriBuilder(uri) { Query = "email=" + Uri.EscapeDataString(_email.Text.Trim()) }.Uri;
+        try { Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true }); }
+        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
+        {
+            _message.ForeColor = Color.Firebrick;
+            _message.Text = $"Could not open the browser. Open {uri.AbsoluteUri} yourself.";
+            return;
+        }
+        _resend.Visible = true;
+        _message.ForeColor = Color.SeaGreen;
+        _message.Text = "The secure account page was opened in your browser. Verify the email, then sign in here.";
     }
 
     private async Task SubmitAsync()
@@ -81,25 +104,10 @@ public sealed class AccountForm : Form
             _message.Text = "Email and password are required.";
             return;
         }
-        if (_registering && (string.IsNullOrWhiteSpace(_displayName.Text) || _password.Text.Length < 12))
-        {
-            _message.Text = "A display name and a password of at least 12 characters are required.";
-            return;
-        }
-
         SetBusy(true);
         try
         {
             var client = new AccountClient(_server.Text);
-            if (_registering)
-            {
-                var result = await client.RegisterAsync(_email.Text.Trim(), _displayName.Text.Trim(), _password.Text, CancellationToken.None);
-                SetBusy(false);
-                SetMode(false);
-                ShowInfo(result.Message);
-                _resend.Visible = true;
-                return;
-            }
             Session = await client.LoginAsync(_email.Text.Trim(), _password.Text, CancellationToken.None);
             DialogResult = DialogResult.OK;
             Close();
@@ -109,7 +117,7 @@ public sealed class AccountForm : Form
             SetBusy(false);
             _message.Text = ex is TaskCanceledException ? "The account server did not respond in time." : ex.Message;
             // 403 on sign-in means the password was right but the email link has not been opened yet.
-            if (!_registering && ex is AccountApiException { StatusCode: 403 }) _resend.Visible = true;
+            if (ex is AccountApiException { StatusCode: 403 }) _resend.Visible = true;
         }
         finally { SetBusy(false); }
     }
@@ -149,7 +157,7 @@ public sealed class AccountForm : Form
         if (busy)
         {
             _message.ForeColor = SystemColors.GrayText;
-            _message.Text = _registering ? "Creating account…" : "Signing in…";
+            _message.Text = "Signing in…";
         }
     }
 }

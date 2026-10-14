@@ -152,8 +152,8 @@ public sealed class HistoricalTestForm : Form
     {
         var selected = useCheckedSelection ? _rows.Where(x => x.Include).Select(x => x.Scan).ToList() : [];
         _current = selected.Count > 0
-            ? ManifestOptimizer.BuildSelected(selected, _ship.CapacityScu, _planningUtc, _travelTimes)
-            : ManifestOptimizer.Build(_rows.Select(x => x.Scan).ToList(), _ship.CapacityScu, _planningUtc, _travelTimes);
+            ? ManifestOptimizer.BuildSelected(selected, _ship, _planningUtc, _travelTimes)
+            : ManifestOptimizer.Build(_rows.Select(x => x.Scan).ToList(), _ship, _planningUtc, _travelTimes);
 
         if (!useCheckedSelection)
         {

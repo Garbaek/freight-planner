@@ -37,15 +37,34 @@ public sealed class MainForm : Form
     private readonly Dictionary<ContractScan, (string Key, Color Color)> _urgencyColors = [];
     private AuthSession? _authSession;
     private string _apiBaseUrl = "https://freightplanner.cipherdispatch.com";
+    private string _tradeStation = "";
+    private TradeIdeasForm? _tradeWindow;
     private CancellationTokenSource? _receiverCancellation;
     private AccountClient? _pairingClient;
     private PairingRegistration? _pairingRegistration;
     private readonly SemaphoreSlim _mobilePlanPublishGate = new(1, 1);
+    private readonly SemaphoreSlim _uexTradeSyncGate = new(1, 1);
     private string _lastPublishedMobilePlan = "";
     private long _mobilePlanRevision;
 
     private PairingForm? _pairingForm;
     private bool _tabletLinked;
+    private TabletPlan? _tabletPlan;
+    // A trade run from Trade ideas, when that is what the tablet shows. The tablet holds one thing at a time,
+    // so this and _tabletPlan are never both set.
+    private TradeRun? _tabletRun;
+    // The Windows monitor can stay open if a contract plan later replaces the trade run on the tablet.
+    private TradeRun? _activeTradeRun;
+    private TradeRunMonitorForm? _tradeRunMonitor;
+
+    // The plan as it was last sent. The tablet keeps showing this one until Send to tablet is pressed again,
+    // so its checklist ticks are matched against these stops and not against whatever the PC plan has become.
+    private sealed record TabletPlan(string Key, string Fingerprint, string ShipName, int Jobs, string Title, string Summary,
+        IReadOnlyList<string> Route, IReadOnlyList<MobilePlanStop> Stops)
+    {
+        public ExecutionProgress? Progress { get; set; }
+        public long FirstRevision { get; set; }
+    }
 
     private readonly TextBox _folder = new() { Dock = DockStyle.Fill };
     private readonly Button _findFolder = new() { Text = "Find", AutoSize = true, Margin = new Padding(3, 1, 0, 0) };
@@ -59,6 +78,7 @@ public sealed class MainForm : Form
         DropDownHeight = 420
     };
     private readonly NumericUpDown _capacity = new() { Dock = DockStyle.Fill, Minimum = 1, Maximum = 5000 };
+    private readonly LinkLabel _cargo = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(8, 0, 0, 0) };
     private readonly Button _watch = new() { Text = "Start watching", AutoSize = true };
     private readonly Button _scanRecent = new() { Text = "Scan recent screenshots", AutoSize = true };
     private readonly Button _testOld = new() { Text = "Test old screenshots", AutoSize = true };
@@ -67,7 +87,9 @@ public sealed class MainForm : Form
     private readonly Button _execute = new() { Text = "Execute route", AutoSize = true, Enabled = false };
     private readonly Button _comparePlans = new() { Text = "Compare plans", AutoSize = true, Enabled = false };
     private readonly Button _editContract = new() { Text = "Edit / inspect contract", AutoSize = true, Enabled = false };
-    private readonly Button _travelMap = new() { Text = "Travel map & times", AutoSize = true };
+    private readonly Button _travelMap = new() { Text = "Travel map && times", AutoSize = true };
+    private readonly Button _tradeIdeas = new() { Text = "Trade ideas", AutoSize = true };
+    private readonly Button _tradeMonitor = new() { Text = "Trade monitor", AutoSize = true, Enabled = false };
     private readonly Button _openHistory = new() { Text = "Plan history", AutoSize = true };
     private readonly Button _forgetImages = new() { Text = "Forget old images", AutoSize = true };
     private readonly Button _clear = new() { Text = "Clear batch", AutoSize = true };
@@ -96,6 +118,7 @@ public sealed class MainForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         BuildUi();
         LoadSettings();
+        _ = SendAnonymousLaunchAsync();
         RestoreSession();
         _status.Text = _ocr is null ? "Local OCR unavailable" : _contracts.Count > 0
             ? $"Local OCR ready — restored {_contracts.Count:N0} active contract(s)"
@@ -127,11 +150,16 @@ public sealed class MainForm : Form
         folderRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         folderRow.Controls.Add(_folder, 0, 0);
         folderRow.Controls.Add(_findFolder, 1, 0);
+        var capacityRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
+        capacityRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
+        capacityRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        capacityRow.Controls.Add(_capacity, 0, 0);
+        capacityRow.Controls.Add(_cargo, 1, 0);
         AddRow(settings, 0, "Screenshots", folderRow, "Ship", _ship);
-        AddRow(settings, 1, "Status", _status, "Capacity", _capacity);
+        AddRow(settings, 1, "Status", _status, "Capacity", capacityRow);
 
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
-        buttons.Controls.AddRange([_watch, _scanRecent, _testOld, _planNow, _comparePlans, _openRoute, _execute, _editContract, _travelMap, _openHistory, _forgetImages, _clear, _account, _pairPhone, _sendTablet, _accountStatus]);
+        buttons.Controls.AddRange([_watch, _scanRecent, _testOld, _planNow, _comparePlans, _openRoute, _execute, _editContract, _travelMap, _tradeIdeas, _tradeMonitor, _openHistory, _forgetImages, _clear, _account, _pairPhone, _sendTablet, _accountStatus]);
         settings.Controls.Add(buttons, 1, 2);
         settings.SetColumnSpan(buttons, 3);
 
@@ -142,7 +170,10 @@ public sealed class MainForm : Form
             if (selected is not null && selected.Name != "Custom") _capacity.Value = selected.CapacityScu;
             InvalidatePlan();
         };
-        _capacity.ValueChanged += (_, _) => InvalidatePlan();
+        _ship.TextChanged += (_, _) => ShowCargo();
+        _capacity.ValueChanged += (_, _) => { ShowCargo(); InvalidatePlan(); };
+        _cargo.LinkClicked += (_, _) => MessageBox.Show(this, ShipCatalog.DescribeCargo(CurrentShip(), ShipCatalog.VerifiedForPatch(AppContext.BaseDirectory)),
+            "Cargo grid", MessageBoxButtons.OK, MessageBoxIcon.Information);
         _findFolder.Click += async (_, _) => await FindScreenshotFolderAsync(announce: true);
         _watch.Click += async (_, _) => await ToggleWatchingAsync();
         _scanRecent.Click += async (_, _) => await QueueRecentAsync();
@@ -153,6 +184,8 @@ public sealed class MainForm : Form
         _execute.Click += (_, _) => OpenExecutionMode();
         _editContract.Click += (_, _) => EditSelectedContract();
         _travelMap.Click += (_, _) => OpenTravelMap();
+        _tradeIdeas.Click += (_, _) => OpenTradeIdeas();
+        _tradeMonitor.Click += (_, _) => OpenTradeRunMonitor();
         _openHistory.Click += (_, _) => OpenHistoryFolder();
         _forgetImages.Click += (_, _) => ForgetProcessedImages();
         _clear.Click += (_, _) =>
@@ -438,6 +471,13 @@ public sealed class MainForm : Form
                 {
                     _status.Text = $"Local OCR — {Path.GetFileName(file)}…";
                     var text = await Task.Run(() => _ocr.ReadTextAsync(file, CancellationToken.None));
+                    // A commodity terminal is not a contract; Trade ideas > Market reporter reads those.
+                    if (TerminalScreenParser.LooksLikeTerminal(text))
+                    {
+                        _imageRegistry.MarkProcessed(file, saveImmediately: false);
+                        _queued.TryRemove(file, out _);
+                        continue;
+                    }
                     _status.Text = $"Parsing — {Path.GetFileName(file)}…";
                     var scan = MissionParser.Parse(text, file);
                     var duplicate = _contracts.FirstOrDefault(x => ContractIdentity.SameMission(x, scan));
@@ -497,6 +537,13 @@ public sealed class MainForm : Form
                 RefreshManifest();
                 return;
             }
+            if (!CratePlanner.Fits(checkedContracts, profile.Grids))
+            {
+                _planWarning = $"The checked jobs come as {CratePlanner.DescribeContainers(checkedContracts)} crates, which do not fit the {profile.Name} cargo grid.";
+                _status.Text = "Checked jobs do not fit the cargo grid";
+                RefreshManifest();
+                return;
+            }
         }
         var revision = _planRevision;
         var selected = checkedContracts.ToList();
@@ -510,8 +557,8 @@ public sealed class MainForm : Form
         try
         {
             manifest = selected.Count > 0
-                ? ManifestOptimizer.BuildSelected(selected, profile.CapacityScu, travelTimes: _travelTimes)
-                : await Task.Run(() => ManifestOptimizer.Build(planningContracts, profile.CapacityScu,
+                ? ManifestOptimizer.BuildSelected(selected, profile, travelTimes: _travelTimes)
+                : await Task.Run(() => ManifestOptimizer.Build(planningContracts, profile,
                     travelTimes: _travelTimes, preference: preference));
         }
         catch (Exception ex)
@@ -616,7 +663,14 @@ public sealed class MainForm : Form
         }
     }
 
-    private ShipProfile CurrentShip() => new(_ship.Text.Length == 0 ? "ARGO RAFT" : _ship.Text, (int)_capacity.Value);
+    // The ship as picked, with the capacity as typed: its grids and note come from the catalog.
+    private ShipProfile CurrentShip() => (_ships.FirstOrDefault(x => x.Name == _ship.Text) ?? new ShipProfile("", 0)) with
+    {
+        Name = _ship.Text.Length == 0 ? "ARGO RAFT" : _ship.Text, CapacityScu = (int)_capacity.Value
+    };
+
+    // The ship's grids in a few words next to the capacity; a click shows them one by one.
+    private void ShowCargo() => _cargo.Text = ShipCatalog.SummarizeCargo(CurrentShip());
 
     private void RefreshGrid(bool refreshManifest = true)
     {
@@ -675,9 +729,9 @@ public sealed class MainForm : Form
         _travelTimes.ActiveShipName = profile.Name;
         var selected = CheckedContracts();
         var manifest = selected.Count > 0
-            ? ManifestOptimizer.BuildSelected(selected, profile.CapacityScu, travelTimes: _travelTimes)
+            ? ManifestOptimizer.BuildSelected(selected, profile, travelTimes: _travelTimes)
             : _currentManifest is { Contracts.Count: > 0 }
-                ? ManifestOptimizer.RefreshExisting(_currentManifest, profile.CapacityScu, travelTimes: _travelTimes)
+                ? ManifestOptimizer.RefreshExisting(_currentManifest, profile, travelTimes: _travelTimes)
                 : new ManifestResult { PlanningUtc = DateTime.UtcNow, Preference = _planPreference };
         if (selected.Count > 0 && manifest.HasKnownAvailability && manifest.HeadroomMinutes < 0 &&
             TimerOverrideKey(selected, profile).Equals(_timerOverrideSelectionKey, StringComparison.Ordinal))
@@ -702,11 +756,9 @@ public sealed class MainForm : Form
         _execute.Enabled = manifest.Contracts.Count > 0;
         _comparePlans.Enabled = _contracts.Any(x => x.IsEligible) && CheckedContracts().Count == 0;
         _editContract.Enabled = _grid.CurrentRow?.DataBoundItem is ContractScan;
-        // Enabled whenever there is a plan, so clicking it can explain what is still missing for the tablet.
-        _sendTablet.Enabled = manifest.Contracts.Count > 0;
+        UpdateSendTabletButton();
         _planNow.Text = CheckedContracts().Count > 0 ? $"Plan {CheckedContracts().Count} checked job(s)" : "Plan suggested run";
         if (countdownTick) _grid.Invalidate();
-        _ = PublishCurrentPlanAsync(manifest, profile);
     }
 
     private List<ContractScan> CheckedContracts() => _contracts.Where(x => x.SelectedForPlan).ToList();
@@ -758,7 +810,7 @@ public sealed class MainForm : Form
         {
             _execution = progress;
             SaveSession();
-            _ = PublishCurrentPlanAsync(_currentManifest, CurrentShip());
+            if (_tabletPlan is not null) _ = PublishTabletPlanAsync(_tabletPlan);
         });
         executionWindow.FormClosed += (_, _) => InvalidatePlan();
         executionWindow.Show(this);
@@ -773,13 +825,13 @@ public sealed class MainForm : Form
         }
         _travelTimes.ActiveShipName = CurrentShip().Name;
         var contracts = _contracts.ToList();
-        var capacity = CurrentShip().CapacityScu;
+        var ship = CurrentShip();
         _comparePlans.Enabled = false;
         _status.Text = "Comparing route alternatives in the background…";
         List<PlanAlternative> alternatives;
         try
         {
-            alternatives = await Task.Run(() => ManifestOptimizer.BuildAlternatives(contracts, capacity, DateTime.UtcNow, _travelTimes));
+            alternatives = await Task.Run(() => ManifestOptimizer.BuildAlternatives(contracts, ship, DateTime.UtcNow, _travelTimes));
         }
         finally
         {
@@ -818,6 +870,21 @@ public sealed class MainForm : Form
     {
         var window = new TravelMapForm(_travelTimes, _currentManifest);
         window.FormClosed += (_, _) => InvalidatePlan();
+        window.Show(this);
+    }
+
+    private void OpenTradeIdeas()
+    {
+        // One trading window: a second one would watch the same screenshots and write the same database.
+        if (_tradeWindow is { IsDisposed: false })
+        {
+            _tradeWindow.Activate();
+            return;
+        }
+        var host = new TradeHost(_settings.Trade, _ocr, _ships, CurrentShip, () => _folder.Text.Trim(),
+            folder => { _folder.Text = folder; SaveSettings(); }, SaveSettings, SendRunToTabletAsync, SetTradeTrackerEnabledAsync);
+        var window = _tradeWindow = new TradeIdeasForm(CurrentShip(), AppContext.BaseDirectory, _tradeStation, host);
+        window.FormClosed += (_, _) => { _tradeStation = window.Station; _tradeWindow = null; SaveSettings(); };
         window.Show(this);
     }
 
@@ -863,21 +930,39 @@ public sealed class MainForm : Form
                 _settings = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(_settingsPath), JsonDefaults.Options()) ?? new();
         }
         catch { _settings = new(); }
+        _settings.Trade ??= new();
         _folder.Text = _settings.ScreenshotFolder;
-        _ship.SelectedItem = _ships.Any(x => x.Name == _settings.ShipName) ? _settings.ShipName : "Custom";
+        _ship.SelectedItem = ShipCatalog.Find(_ships, _settings.ShipName)?.Name ?? "Custom";
         _capacity.Value = Math.Clamp(_settings.ShipCapacity, (int)_capacity.Minimum, (int)_capacity.Maximum);
         _apiBaseUrl = _settings.ApiBaseUrl;
+        _tradeStation = _settings.TradeStation;
+        ShowCargo();
     }
 
     private void SaveSettings()
     {
-        _settings = new AppSettings
-        {
-            ScreenshotFolder = _folder.Text.Trim(),
-            ShipName = _ship.Text, ShipCapacity = (int)_capacity.Value, PlanPreference = _planPreference,
-            ApiBaseUrl = _apiBaseUrl
-        };
+        // The same object stays in use because the trading window holds on to its Trade part.
+        _settings.ScreenshotFolder = _folder.Text.Trim();
+        _settings.ShipName = _ship.Text;
+        _settings.ShipCapacity = (int)_capacity.Value;
+        _settings.PlanPreference = _planPreference;
+        _settings.ApiBaseUrl = _apiBaseUrl;
+        _settings.TradeStation = _tradeStation;
         try { File.WriteAllText(_settingsPath, JsonSerializer.Serialize(_settings, JsonDefaults.Options())); } catch { }
+    }
+
+    private async Task SendAnonymousLaunchAsync()
+    {
+        if (!_settings.Trade.ShareAnonymousUsage) return;
+        try
+        {
+            var version = Application.ProductVersion.Split('+')[0];
+            await new AccountClient(_apiBaseUrl).TrackLaunchAsync("windows", version[..Math.Min(version.Length, 32)], CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is AccountApiException or HttpRequestException or TaskCanceledException or UriFormatException)
+        {
+            // Anonymous usage reporting must never delay startup or interrupt local planning.
+        }
     }
 
     private async Task ManageAccountAsync()
@@ -895,10 +980,12 @@ public sealed class MainForm : Form
             _pairingClient = null;
             _pairingRegistration = null;
             _tabletLinked = false;
+            _tabletPlan = null;
             _accountStatus.Text = "Signed out";
             _account.Text = "Account";
             _pairPhone.Text = "Pair phone";
             _pairPhone.Enabled = false;
+            UpdateSendTabletButton();
             return;
         }
 
@@ -910,6 +997,7 @@ public sealed class MainForm : Form
         _accountStatus.Text = $"Signed in: {_authSession.Account.DisplayName}";
         _pairPhone.Enabled = true;
         SaveSettings();
+        _ = SetTradeTrackerEnabledAsync(_settings.Trade.ShareTradeStats);
     }
 
     private async Task PairPhoneAsync()
@@ -928,9 +1016,8 @@ public sealed class MainForm : Form
             _pairingRegistration = registration;
             _tabletLinked = false;
             _lastPublishedMobilePlan = "";
-            _sendTablet.Enabled = _currentManifest?.Contracts.Count > 0;
+            UpdateSendTabletButton();
             _ = ReceivePhoneCommandsAsync(client, registration, _receiverCancellation.Token);
-            _ = PublishCurrentPlanAsync(_currentManifest ?? new ManifestResult(), CurrentShip());
             _pairPhone.Text = "Waiting for phone…";
             _pairingForm?.Close();
             _pairingForm = new PairingForm(_apiBaseUrl, registration);
@@ -998,10 +1085,11 @@ public sealed class MainForm : Form
                         _tabletLinked = true;
                         _pairPhone.Text = "Phone connected";
                         _pairingForm?.Close();
-                        _sendTablet.Enabled = _currentManifest?.Contracts.Count > 0;
-                        _accountStatus.Text = $"Tablet linked: {poll.DeviceName}";
-                        if (_currentManifest is { Contracts.Count: > 0 })
-                            await PublishCurrentPlanAsync(_currentManifest, CurrentShip(), force: true, announce: true);
+                        // A re-link gets back what the tablet already had; anything new only goes out through Send to tablet.
+                        if (_tabletRun is not null) await PublishTradeRunAsync(_tabletRun);
+                        else if (_tabletPlan is null) _accountStatus.Text = $"Tablet linked: {poll.DeviceName} — nothing sent yet";
+                        else await PublishTabletPlanAsync(_tabletPlan, force: true, announce: true);
+                        UpdateSendTabletButton();
                     });
                 }
                 foreach (var command in poll.Commands)
@@ -1036,37 +1124,49 @@ public sealed class MainForm : Form
         _pairPhone.Text = "Pair phone";
         _pairPhone.Enabled = _authSession is not null;
         _accountStatus.Text = message;
+        UpdateSendTabletButton();
     }
 
-    private void ApplyTabletChecklistCommand(RemoteCommand command)
+    private async void ApplyTabletChecklistCommand(RemoteCommand command)
     {
-        if (_currentManifest is not { Contracts.Count: > 0 }) return;
+        if (_tabletRun is { } run)
+        {
+            await ApplyTradeRunCommandAsync(run, command);
+            return;
+        }
+        if (_tabletPlan is not { } sent) return;
         var parts = command.Shortcut.Split('|');
         if (parts.Length != 6 || parts[0] != "FC1" ||
-            !long.TryParse(parts[1], out _) || !int.TryParse(parts[2], out var stopIndex) ||
+            !long.TryParse(parts[1], out var revision) || !int.TryParse(parts[2], out var stopIndex) ||
             !int.TryParse(parts[4], out var itemIndex) || !int.TryParse(parts[5], out var state))
         {
             _status.Text = "Tablet checklist update was malformed and was ignored";
             return;
         }
+        // Ticked on the previous plan just before the tablet received this one.
+        if (revision < sent.FirstRevision) return;
 
-        var guide = ManifestOptimizer.BuildRouteGuide(_currentManifest.LocalRoute, _currentManifest, _travelTimes);
+        var guide = sent.Stops;
         if (stopIndex < 0 || stopIndex >= guide.Count) return;
         var kind = parts[3].ToUpperInvariant();
         if (kind is not ("D" or "P" or "K" or "S")) return;
         var done = state == 1;
-        var fingerprint = ContractIdentity.PlanFingerprint(_currentManifest);
-        if (_execution is null || !_execution.PlanFingerprint.Equals(fingerprint, StringComparison.OrdinalIgnoreCase))
+        if (IsFor(_execution, sent)) sent.Progress = _execution;
+        else
         {
-            _execution = new ExecutionProgress
+            sent.Progress ??= new ExecutionProgress
             {
-                PlanFingerprint = fingerprint,
-                ShipName = CurrentShip().Name,
-                Route = _currentManifest.LocalRoute.ToList()
+                PlanFingerprint = sent.Fingerprint,
+                ShipName = sent.ShipName,
+                Route = sent.Route.ToList()
             };
+            // Also the PC's active run, unless the PC has since moved on to a different plan of its own.
+            if (_execution is null || (_currentManifest is { Contracts.Count: > 0 } current &&
+                                       ContractIdentity.PlanFingerprint(current).Equals(sent.Fingerprint, StringComparison.OrdinalIgnoreCase)))
+                _execution = sent.Progress;
         }
 
-        var progress = _execution;
+        var progress = sent.Progress!;
         var timestamp = command.CreatedAtUtc == default ? DateTime.UtcNow : command.CreatedAtUtc;
         var timingNotes = new List<string>();
         var expected = TabletChecklistKeys(stopIndex, guide[stopIndex]);
@@ -1091,7 +1191,7 @@ public sealed class MainForm : Form
                 if (elapsed > TimeSpan.Zero && elapsed < TimeSpan.FromHours(4))
                 {
                     var minutes = Math.Max(1, (int)Math.Round(elapsed.TotalMinutes));
-                    var learnedLeg = _travelTimes.RecordObservation(guide[stopIndex - 1].Location, guide[stopIndex].Location, minutes, CurrentShip().Name);
+                    var learnedLeg = _travelTimes.RecordObservation(guide[stopIndex - 1].Location, guide[stopIndex].Location, minutes, sent.ShipName);
                     progress.RecordedTravelArrivals.Add(stopIndex);
                     timingNotes.Add($"flight {minutes}m (avg {learnedLeg.Minutes}m)");
                 }
@@ -1105,7 +1205,7 @@ public sealed class MainForm : Form
             if (progress.StopStartedAtUtc.TryGetValue(stopIndex, out var started) &&
                 timestamp > started && !progress.RecordedHandlingStops.Contains(stopIndex))
             {
-                var handling = _travelTimes.RecordHandlingObservation(guide[stopIndex].Location, timestamp - started, CurrentShip().Name);
+                var handling = _travelTimes.RecordHandlingObservation(guide[stopIndex].Location, timestamp - started, sent.ShipName);
                 progress.RecordedHandlingStops.Add(stopIndex);
                 timingNotes.Add($"stop work {(timestamp - started).TotalMinutes:N1}m (avg {handling.Minutes}m)");
             }
@@ -1125,9 +1225,13 @@ public sealed class MainForm : Form
                        (timingNotes.Count == 0 ? "" : $" — learned {string.Join(", ", timingNotes)}");
         _accountStatus.Text = $"Tablet progress: stop {stopIndex + 1}/{guide.Count}";
         RefreshManifest();
+        _ = PublishTabletPlanAsync(sent);
     }
 
-    private static List<string> TabletChecklistKeys(int stopIndex, RouteGuideStep stop)
+    private static bool IsFor(ExecutionProgress? progress, TabletPlan plan) =>
+        progress?.PlanFingerprint.Equals(plan.Fingerprint, StringComparison.OrdinalIgnoreCase) == true;
+
+    private static List<string> TabletChecklistKeys(int stopIndex, MobilePlanStop stop)
     {
         var result = new List<string>();
         for (var i = 0; i < stop.Deliveries.Count; i++) result.Add($"{stopIndex}|D|{i}");
@@ -1165,54 +1269,72 @@ public sealed class MainForm : Form
         _sendTablet.Text = "Sending…";
         try
         {
-            await PublishCurrentPlanAsync(_currentManifest, CurrentShip(), force: true, announce: true);
+            var plan = BuildTabletPlan(_currentManifest, CurrentShip());
+            // The tablet clears its ticks when the summary line changes, and the trip estimate in it drifts.
+            // So an unchanged checklist is re-sent exactly as the tablet already has it.
+            if (_tabletPlan is { } previous && previous.Key == plan.Key) plan = previous;
+            await PublishTabletPlanAsync(plan, force: true, announce: true);
         }
-        finally
-        {
-            _sendTablet.Text = "Send to tablet";
-            _sendTablet.Enabled = _currentManifest.Contracts.Count > 0;
-        }
+        finally { UpdateSendTabletButton(); }
     }
 
-    private async Task<bool> PublishCurrentPlanAsync(ManifestResult manifest, ShipProfile ship, bool force = false, bool announce = false)
+    private void UpdateSendTabletButton()
+    {
+        var manifest = _currentManifest;
+        // Enabled whenever there is a plan, so clicking it can explain what is still missing for the tablet.
+        _sendTablet.Enabled = manifest is { Contracts.Count: > 0 };
+        _sendTablet.Text = _tabletLinked && _tabletPlan is { } sent && manifest is { Contracts.Count: > 0 } &&
+                           BuildTabletPlan(manifest, CurrentShip()).Key == sent.Key
+            ? "Sent to tablet ✓"
+            : "Send to tablet";
+    }
+
+    private TabletPlan BuildTabletPlan(ManifestResult manifest, ShipProfile ship)
+    {
+        var title = manifest.TimerBudgetOverridden ? "TIMER OVERRIDE FLIGHT PLAN"
+            : manifest.HasUnverifiedValues ? "UNVERIFIED FLIGHT PLAN"
+            : "CURRENT FLIGHT PLAN";
+        var summary = $"{ship.Name} • {manifest.TotalScu:N0}/{ship.CapacityScu:N0} SCU • " +
+                      (manifest.UnknownRewardCount > 0 ? $"{manifest.TotalReward:N0} known aUEC" : $"{manifest.TotalReward:N0} aUEC") +
+                      $" • ~{manifest.EstimatedTripMinutes:N0} min";
+        var stops = ManifestOptimizer.BuildRouteGuide(manifest.LocalRoute, manifest, _travelTimes)
+            .Select(x => new MobilePlanStop(x.Number, x.Location, x.TravelMinutesFromPrevious,
+                x.Deliveries, x.Pickups, x.Packing)).ToArray();
+        // Travel estimates change as flights are timed, so they do not count as a different plan.
+        var key = JsonSerializer.Serialize(new { title, ship, stops = stops.Select(x => new { x.Location, x.Deliveries, x.Pickups, x.Packing }) });
+        return new TabletPlan(key, ContractIdentity.PlanFingerprint(manifest), ship.Name, manifest.Contracts.Count,
+            title, summary, manifest.LocalRoute.ToList(), stops);
+    }
+
+    // The only way anything reaches the tablet. Send to tablet forces a plan out; without force this only
+    // moves the current-stop marker of the plan the tablet already has.
+    private async Task<bool> PublishTabletPlanAsync(TabletPlan plan, bool force = false, bool announce = false)
     {
         var client = _pairingClient;
         var registration = _pairingRegistration;
         if (client is null || registration is null) return false;
 
-        var title = manifest.Contracts.Count == 0
-            ? "NO ACTIVE FLIGHT PLAN"
-            : manifest.TimerBudgetOverridden ? "TIMER OVERRIDE FLIGHT PLAN"
-            : manifest.HasUnverifiedValues ? "UNVERIFIED FLIGHT PLAN"
-            : "CURRENT FLIGHT PLAN";
-        var summary = manifest.Contracts.Count == 0
-            ? "Scan contracts on the PC to publish a route."
-            : $"{ship.Name} • {manifest.TotalScu:N0}/{ship.CapacityScu:N0} SCU • " +
-              (manifest.UnknownRewardCount > 0 ? $"{manifest.TotalReward:N0} known aUEC" : $"{manifest.TotalReward:N0} aUEC") +
-              $" • ~{manifest.EstimatedTripMinutes:N0} min";
-        var stops = ManifestOptimizer.BuildRouteGuide(manifest.LocalRoute, manifest, _travelTimes)
-            .Select(x => new MobilePlanStop(x.Number, x.Location, x.TravelMinutesFromPrevious,
-                x.Deliveries, x.Pickups, x.Packing)).ToArray();
-        var activeExecution = manifest.Contracts.Count > 0 &&
-                              _execution?.PlanFingerprint.Equals(ContractIdentity.PlanFingerprint(manifest), StringComparison.OrdinalIgnoreCase) == true
-            ? _execution
-            : null;
-        var currentStopIndex = manifest.Contracts.Count == 0 ? -1 : Math.Clamp(activeExecution?.CurrentStopIndex ?? 0, 0, Math.Max(0, stops.Length - 1));
-        var currentStopCompleted = activeExecution?.CurrentStopCompleted ?? false;
-        var contentFingerprint = JsonSerializer.Serialize(new { title, summary, currentStopIndex, currentStopCompleted, stops }, JsonDefaults.Options());
-
         await _mobilePlanPublishGate.WaitAsync();
         try
         {
+            // A progress update that waited behind a newer Send must not put the older plan back.
+            if (!force && !ReferenceEquals(plan, _tabletPlan)) return false;
+            var progress = IsFor(_execution, plan) ? _execution : plan.Progress;
+            var currentStopIndex = Math.Clamp(progress?.CurrentStopIndex ?? 0, 0, Math.Max(0, plan.Stops.Count - 1));
+            var currentStopCompleted = progress?.CurrentStopCompleted ?? false;
+            var contentFingerprint = JsonSerializer.Serialize(new { plan.Title, plan.Summary, currentStopIndex, currentStopCompleted, plan.Stops }, JsonDefaults.Options());
             if (!force && contentFingerprint == _lastPublishedMobilePlan) return true;
-            var snapshot = new MobilePlanSnapshot(++_mobilePlanRevision, DateTime.UtcNow, title, summary,
-                currentStopIndex, currentStopCompleted, stops);
+            var snapshot = new MobilePlanSnapshot(++_mobilePlanRevision, DateTime.UtcNow, plan.Title, plan.Summary,
+                currentStopIndex, currentStopCompleted, plan.Stops);
+            if (plan.FirstRevision == 0) plan.FirstRevision = snapshot.Revision;
             await client.PublishPlanAsync(registration.SessionId, registration.ReceiverToken, snapshot, CancellationToken.None);
             _lastPublishedMobilePlan = contentFingerprint;
+            _tabletPlan = plan;
+            _tabletRun = null;
             if (announce && !IsDisposed)
             {
-                _accountStatus.Text = $"Tablet synced: {stops.Length} stops at {DateTime.Now:HH:mm:ss}";
-                _status.Text = $"Flight plan sent to tablet — {manifest.Contracts.Count} job(s), {stops.Length} route stop(s)";
+                _accountStatus.Text = $"Tablet synced: {plan.Stops.Count} stops at {DateTime.Now:HH:mm:ss}";
+                _status.Text = $"Flight plan sent to tablet — {plan.Jobs} job(s), {plan.Stops.Count} route stop(s)";
             }
             return true;
         }
@@ -1227,6 +1349,331 @@ public sealed class MainForm : Form
             return false;
         }
         finally { _mobilePlanPublishGate.Release(); }
+    }
+
+    // Trade ideas hands a run over here. Windows always opens its monitor; a linked tablet receives the
+    // same run as a second, synchronized surface.
+    private async Task<string> SendRunToTabletAsync(TradeRun run)
+    {
+        if (_activeTradeRun is { IsCompleted: false } active && !ReferenceEquals(active, run) &&
+            MessageBox.Show(this, $"Replace the active {active.Commodity} run with this {run.Commodity} run? The existing journal row is kept.",
+                "Start another trade run", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+            return "The existing trade run is still active.";
+
+        _activeTradeRun = _tabletRun = run;
+        _tabletPlan = null;
+        _tradeMonitor.Enabled = true;
+        OpenTradeRunMonitor();
+
+        if (_authSession is null || _pairingClient is null || _pairingRegistration is null || !_tabletLinked)
+        {
+            _status.Text = $"Trade run started on Windows — {run.Scu:N0} SCU {run.Commodity}, {run.Origin} to {run.Destination}";
+            return "The Windows trade monitor is running. Link a tablet if you also want the checklist there.";
+        }
+        var problem = await PublishTradeRunAsync(run);
+        if (problem is not null) return $"The Windows trade monitor is running, but the run could not be sent to the tablet: {problem}";
+        _status.Text = $"Trade run sent to tablet — {run.Scu:N0} SCU {run.Commodity}, {run.Origin} to {run.Destination}";
+        return $"Windows and tablet: {run.Scu:N0} SCU {run.Commodity} to {run.Destination}{(run.DestinationDetail.Length > 0 ? $" ({run.DestinationDetail})" : "")}. " +
+               "The clock is running; tick the steps on either screen.";
+    }
+
+    private void OpenTradeRunMonitor()
+    {
+        if (_activeTradeRun is not { } run) return;
+        if (_tradeRunMonitor is { IsDisposed: false } existing && ReferenceEquals(existing.Run, run))
+        {
+            existing.Activate();
+            return;
+        }
+        _tradeRunMonitor?.Close();
+        var monitor = new TradeRunMonitorForm(run, (step, done) => ApplyWindowsTradeStepAsync(run, step, done));
+        _tradeRunMonitor = monitor;
+        monitor.FormClosed += (_, _) => { if (ReferenceEquals(_tradeRunMonitor, monitor)) _tradeRunMonitor = null; };
+        monitor.Show(this);
+    }
+
+    // Puts a trade run on the tablet, or moves its stop marker on. Null when it went out, else why not.
+    private async Task<string?> PublishTradeRunAsync(TradeRun run)
+    {
+        var client = _pairingClient;
+        var registration = _pairingRegistration;
+        if (client is null || registration is null) return "the tablet link is gone";
+
+        await _mobilePlanPublishGate.WaitAsync();
+        try
+        {
+            var snapshot = run.ToSnapshot(++_mobilePlanRevision, DateTime.UtcNow);
+            if (run.FirstRevision == 0) run.FirstRevision = snapshot.Revision;
+            await client.PublishPlanAsync(registration.SessionId, registration.ReceiverToken, snapshot, CancellationToken.None);
+            _tabletRun = run;
+            _tabletPlan = null;
+            _lastPublishedMobilePlan = "";
+            if (!IsDisposed)
+            {
+                UpdateSendTabletButton();
+                _accountStatus.Text = $"Tablet synced: trade run at {DateTime.Now:HH:mm:ss}";
+            }
+            return null;
+        }
+        catch (Exception ex) when (ex is AccountApiException or HttpRequestException or TaskCanceledException)
+        {
+            if (!IsDisposed) _accountStatus.Text = $"Trade run sync failed: {ex.Message}";
+            return ex.Message;
+        }
+        finally { _mobilePlanPublishGate.Release(); }
+    }
+
+    // A step ticked or unticked on the tablet. The relay stamps each tick with its own clock, and that time is kept.
+    private async Task ApplyTradeRunCommandAsync(TradeRun run, RemoteCommand command)
+    {
+        var parts = command.Shortcut.Split('|');
+        if (parts.Length != 6 || parts[0] != "FC1" ||
+            !long.TryParse(parts[1], out var revision) || !int.TryParse(parts[2], out var stopIndex) ||
+            !int.TryParse(parts[4], out var itemIndex) || !int.TryParse(parts[5], out var state))
+        {
+            _status.Text = "Tablet checklist update was malformed and was ignored";
+            return;
+        }
+        // Ticked on whatever the tablet showed just before it received this run.
+        if (revision < run.FirstRevision) return;
+        var timestamp = command.CreatedAtUtc == default ? DateTime.UtcNow : command.CreatedAtUtc.ToUniversalTime();
+        var kind = parts[3].ToUpperInvariant();
+        var done = state == 1;
+        var step = run.Steps.FirstOrDefault(x => x.Stop == stopIndex && x.Kind == kind && x.Item == itemIndex);
+        if (!run.Apply(stopIndex, kind, itemIndex, done, timestamp)) return;
+
+        await FinishTradeRunChangeAsync(run, step?.Id ?? "", done);
+    }
+
+    private async Task<string> ApplyWindowsTradeStepAsync(TradeRun run, TradeStep step, bool done)
+    {
+        var place = step.Key.Split('|');
+        if (place.Length != 3 || !int.TryParse(place[0], out var stop) || !int.TryParse(place[2], out var item) ||
+            !run.Apply(stop, place[1], item, done, DateTime.UtcNow))
+            return run.Describe();
+        return await FinishTradeRunChangeAsync(run, step.Id, done);
+    }
+
+    private async Task<string> FinishTradeRunChangeAsync(TradeRun run, string changedStep, bool done)
+    {
+        var message = run.Describe();
+        TradeRecord? record = null;
+
+        try
+        {
+            // Nothing goes into the journal before the cargo is bought.
+            if (run.TradeId > 0 || run.IsBought)
+            {
+                var store = new MarketStore(AppContext.BaseDirectory);
+                record = run.TradeId > 0 ? store.Trades().FirstOrDefault(x => x.Id == run.TradeId) : null;
+                record ??= new TradeRecord();
+                run.Fill(record);
+                store.Save(record);
+                run.TradeId = record.Id;
+            }
+        }
+        catch (Exception ex) when (ex is Microsoft.Data.Sqlite.SqliteException or IOException or InvalidOperationException)
+        {
+            message += $" The trading journal could not be written: {ex.Message}";
+        }
+
+        // Publish every accepted change. Android only redraws a changed revision, so the full timestamp map
+        // is also the acknowledgement that makes an untick on either device visible on the other.
+        if (ReferenceEquals(_tabletRun, run) && _pairingClient is not null && _pairingRegistration is not null && _tabletLinked)
+        {
+            var problem = await PublishTradeRunAsync(run);
+            if (problem is not null) message += $" Tablet sync failed: {problem}.";
+        }
+
+        // A second surface may have unticked this checkpoint while a tablet publish was in flight.
+        if (done && record is not null && run.Done.ContainsKey(changedStep))
+        {
+            if (changedStep == TradeRun.Bought)
+                message += await SyncTradeCheckpointAsync(record.Id, buy: true);
+            else if (changedStep == TradeRun.Sold)
+            {
+                // If sync was enabled after the purchase, catch that side up before adding the sale.
+                if (run.Done.ContainsKey(TradeRun.Bought)) message += await SyncTradeCheckpointAsync(record.Id, buy: true);
+                message += await SyncTradeCheckpointAsync(record.Id, buy: false);
+                message += await SyncCommunityTradeAsync(record.Id);
+            }
+        }
+
+        _status.Text = message;
+        _accountStatus.Text = _tabletLinked ? $"Tablet progress: {run.Done.Count} step(s) ticked" : $"Trade progress: {run.Done.Count} step(s) ticked";
+        _tradeRunMonitor?.RefreshFromRun(message);
+        if (_tradeWindow is { IsDisposed: false }) _tradeWindow.ShowTabletRun(message);
+        return message;
+    }
+
+    private async Task<string> SyncTradeCheckpointAsync(long tradeId, bool buy)
+    {
+        if (!_settings.Trade.SyncTradesToUex) return "";
+        await _uexTradeSyncGate.WaitAsync();
+        try
+        {
+            var store = new MarketStore(AppContext.BaseDirectory);
+            var trade = store.Trades().FirstOrDefault(x => x.Id == tradeId);
+            if (trade is null) return " UEX trade sync could not find the journal row.";
+            var existingId = buy ? trade.UexBuyId : trade.UexSellId;
+            var existingState = buy ? trade.UexBuySubmission : trade.UexSellSubmission;
+            if (existingId is not null || existingState == SubmissionState.Submitted)
+                return $" UEX already has the {(buy ? "purchase" : "sale")}" + (existingId is { } id ? $" (trade {id})." : ".");
+
+            var credentials = CredentialVault.Uex();
+            if (credentials is null)
+            {
+                const string detail = "UEX app token and secret key are not both stored.";
+                store.SetTradeSubmission(tradeId, buy, SubmissionState.Failed, detail, null);
+                return $" {detail}";
+            }
+
+            var price = buy ? trade.PriceBuy : trade.PriceSell;
+            var terminal = buy ? trade.OriginId : trade.DestinationId;
+            if (price is not > 0 || terminal <= 0)
+            {
+                var detail = $"The {(buy ? "purchase" : "sale")} has no valid terminal or price for UEX.";
+                store.SetTradeSubmission(tradeId, buy, SubmissionState.Failed, detail, null);
+                return $" {detail}";
+            }
+
+            UexTradeResult result;
+            try
+            {
+                result = await new UexClient(AppContext.BaseDirectory).AddTradeAsync(new UexTradeSubmission
+                {
+                    IdTerminal = terminal, IdCommodity = trade.CommodityId, Operation = buy ? "buy" : "sell",
+                    Scu = trade.Scu, Price = price.Value, IsProduction = 1
+                }, credentials, CancellationToken.None);
+            }
+            catch (UexException ex)
+            {
+                store.SetTradeSubmission(tradeId, buy, SubmissionState.Failed, ex.Message, null);
+                return $" UEX trade sync failed: {ex.Message}";
+            }
+
+            if (!result.Ok || result.TradeId is null)
+            {
+                var detail = result.Ok ? "UEX accepted the trade but did not return its ID, so it was not marked synchronized." : result.Message;
+                store.SetTradeSubmission(tradeId, buy, SubmissionState.Failed, detail, null);
+                return $" UEX trade sync failed: {detail}";
+            }
+            store.SetTradeSubmission(tradeId, buy, SubmissionState.Submitted, $"UEX trade {result.TradeId}", result.TradeId);
+            return $" {(buy ? "Purchase" : "Sale")} added to UEX trade history (trade {result.TradeId}).";
+        }
+        catch (Exception ex) when (ex is Microsoft.Data.Sqlite.SqliteException or IOException or InvalidOperationException)
+        {
+            return $" UEX trade sync state could not be saved: {ex.Message}";
+        }
+        finally { _uexTradeSyncGate.Release(); }
+    }
+
+    private async Task<string> SetTradeTrackerEnabledAsync(bool enabled)
+    {
+        if (_authSession is null)
+            return enabled ? "Saved locally. Sign in to contribute completed runs." : "Website statistics are off on this PC.";
+        try
+        {
+            var client = new AccountClient(_apiBaseUrl);
+            if (_authSession.AccessTokenExpiresAtUtc <= DateTime.UtcNow.AddMinutes(1))
+                _authSession = await client.RefreshAsync(_authSession.RefreshToken, CancellationToken.None);
+            await client.SetTradeProfileAsync(_authSession.AccessToken, enabled, CancellationToken.None);
+            if (!enabled)
+                return "Leaderboard participation is off; earlier contributions are hidden from public totals.";
+
+            var backfill = await SyncPendingCommunityTradesAsync();
+            return $"Participating as {_authSession.Account.DisplayName}; completed runs will appear in the public totals.{backfill}";
+        }
+        catch (Exception ex) when (ex is AccountApiException or HttpRequestException or TaskCanceledException)
+        {
+            return $"The preference is saved locally, but the server could not be updated: {ex.Message}";
+        }
+    }
+
+    private async Task<string> SyncCommunityTradeAsync(long tradeId)
+    {
+        if (!_settings.Trade.ShareTradeStats) return "";
+        MarketStore store;
+        TradeRecord? trade;
+        try
+        {
+            store = new MarketStore(AppContext.BaseDirectory);
+            trade = store.Trades().FirstOrDefault(x => x.Id == tradeId);
+        }
+        catch (Exception ex) when (ex is Microsoft.Data.Sqlite.SqliteException or IOException or InvalidOperationException)
+        {
+            return $" Community tracker state could not be read: {ex.Message}";
+        }
+        if (trade is null || !trade.IsCompleted) return " Community tracker skipped an incomplete journal row.";
+        if (trade.TrackerSubmission == SubmissionState.Submitted) return " Community tracker already has this run.";
+        if (_authSession is null)
+        {
+            const string detail = "Sign in to a Freight Planner account to contribute trade statistics.";
+            store.SetTrackerSubmission(trade.Id, SubmissionState.Failed, detail);
+            return $" {detail}";
+        }
+        if (!Guid.TryParse(trade.TrackerId, out var trackerId))
+        {
+            const string detail = "The journal row has no valid community-tracker ID.";
+            store.SetTrackerSubmission(trade.Id, SubmissionState.Failed, detail);
+            return $" {detail}";
+        }
+
+        try
+        {
+            var client = new AccountClient(_apiBaseUrl);
+            if (_authSession.AccessTokenExpiresAtUtc <= DateTime.UtcNow.AddMinutes(1))
+                _authSession = await client.RefreshAsync(_authSession.RefreshToken, CancellationToken.None);
+            await client.UploadCompletedTradeAsync(_authSession.AccessToken, new CommunityTradeUpload
+            {
+                TradeId = trackerId, CommodityId = trade.CommodityId, CommodityName = trade.CommodityName,
+                OriginId = trade.OriginId, OriginName = trade.OriginName, DestinationId = trade.DestinationId,
+                DestinationName = trade.DestinationName, Ship = trade.Ship, Scu = trade.Scu, PriceBuy = trade.PriceBuy,
+                PriceSell = trade.PriceSell!.Value, OperatingCosts = trade.OperatingCosts ?? 0,
+                BoughtUtc = trade.BoughtUtc, SoldUtc = trade.SoldUtc!.Value, LeaderboardOptIn = true
+            }, CancellationToken.None);
+            store.SetTrackerSubmission(trade.Id, SubmissionState.Submitted, "Stored on the community trade tracker");
+            return " Completed run added to the community trade tracker.";
+        }
+        catch (Exception ex) when (ex is AccountApiException or HttpRequestException or TaskCanceledException)
+        {
+            store.SetTrackerSubmission(trade.Id, SubmissionState.Failed, ex.Message);
+            return $" Community trade upload failed: {ex.Message}";
+        }
+    }
+
+    private async Task<string> SyncPendingCommunityTradesAsync()
+    {
+        List<long> pending;
+        try
+        {
+            pending = new MarketStore(AppContext.BaseDirectory).Trades()
+                .Where(x => x.IsCompleted && x.TrackerSubmission != SubmissionState.Submitted)
+                .Select(x => x.Id)
+                .ToList();
+        }
+        catch (Exception ex) when (ex is Microsoft.Data.Sqlite.SqliteException or IOException or InvalidOperationException)
+        {
+            return $" Existing journal rows could not be checked: {ex.Message}";
+        }
+
+        if (pending.Count == 0) return "";
+        foreach (var tradeId in pending)
+            await SyncCommunityTradeAsync(tradeId);
+
+        try
+        {
+            var submitted = new MarketStore(AppContext.BaseDirectory).Trades()
+                .Count(x => pending.Contains(x.Id) && x.TrackerSubmission == SubmissionState.Submitted);
+            var failed = pending.Count - submitted;
+            return failed == 0
+                ? $" Uploaded {submitted:N0} existing completed run{(submitted == 1 ? "" : "s")}."
+                : $" Uploaded {submitted:N0} existing run{(submitted == 1 ? "" : "s")}; {failed:N0} could not be uploaded and will be retried later.";
+        }
+        catch (Exception ex) when (ex is Microsoft.Data.Sqlite.SqliteException or IOException or InvalidOperationException)
+        {
+            return $" Existing journal uploads finished, but their saved status could not be re-read: {ex.Message}";
+        }
     }
 
     private void RestoreSession()

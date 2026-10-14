@@ -8,6 +8,17 @@ using Windows.Storage.Streams;
 
 namespace FreightCopilot;
 
+// A recognized word and its box in screenshot pixels. Line is the OCR engine's own line number.
+public sealed record OcrWord(string Text, int Line, double X, double Y, double Width, double Height)
+{
+    public double Right => X + Width;
+    public double CenterY => Y + Height / 2;
+}
+
+// Angle is how far the engine found the text turned, clockwise in degrees. When it is not 0, the word boxes are
+// those of the picture turned level about its centre, and miss the words on the picture as it is.
+public sealed record OcrFrame(int Width, int Height, IReadOnlyList<OcrWord> Words, double Angle = 0);
+
 public sealed class LocalOcrService
 {
     // Mission-details panel measured from a 2560x1440 reference screenshot.
@@ -49,6 +60,62 @@ public sealed class LocalOcrService
         using var objectives = CropAndScale(color, new RectangleF(0.50f, 0.18f, 0.50f, 0.70f));
         var objectiveText = await RecognizePlainAsync(objectives, cancellationToken);
         return ReplaceSection(selected, "OBJECTIVES", objectiveText);
+    }
+
+    // Reads the whole screenshot instead of the contract panel, for screens such as the commodity terminal
+    // whose position on screen depends on where the player stands. Word boxes are in screenshot pixels, on the
+    // picture turned level when the frame has an angle.
+    public async Task<OcrFrame> ReadFrameAsync(Image source, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var maxDimension = Math.Max(1, (int)OcrEngine.MaxImageDimension - 8);
+        // Terminal text is small; doubling a 1440p screenshot is what makes prices and crate sizes readable.
+        var scale = Math.Min(Math.Clamp(5120.0 / source.Width, 1, 3), Math.Min((double)maxDimension / source.Width, (double)maxDimension / source.Height));
+        using var scaled = new Bitmap(Math.Max(1, (int)Math.Round(source.Width * scale)), Math.Max(1, (int)Math.Round(source.Height * scale)), PixelFormat.Format24bppRgb);
+        using (var graphics = Graphics.FromImage(scaled))
+        {
+            graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            graphics.DrawImage(source, new Rectangle(0, 0, scaled.Width, scaled.Height), new Rectangle(0, 0, source.Width, source.Height), GraphicsUnit.Pixel);
+        }
+        var result = await RecognizeResultAsync(scaled, cancellationToken);
+        var words = result.Lines.SelectMany((line, index) => line.Words.Select(word => new OcrWord(word.Text, index,
+            word.BoundingRect.X / scale, word.BoundingRect.Y / scale, word.BoundingRect.Width / scale, word.BoundingRect.Height / scale))).ToList();
+        return new OcrFrame(source.Width, source.Height, words, result.TextAngle ?? 0);
+    }
+
+    // Reads one part of a screenshot again, enlarged, for text the full-frame pass is too coarse for.
+    public async Task<IReadOnlyList<OcrWord>> ReadRegionAsync(Image source, Rectangle region, double scale, bool highContrast, CancellationToken cancellationToken)
+    {
+        region.Intersect(new Rectangle(0, 0, source.Width, source.Height));
+        if (region.Width < 4 || region.Height < 4) return [];
+        // The engine ignores very small images, so the crop sits on a margin of its own background.
+        const int margin = 24;
+        using var crop = new Bitmap((int)(region.Width * scale) + margin * 2, (int)(region.Height * scale) + margin * 2, PixelFormat.Format24bppRgb);
+        using (var graphics = Graphics.FromImage(crop))
+        {
+            graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            graphics.Clear(highContrast ? Color.White : Color.Black);
+            var target = new Rectangle(margin, margin, crop.Width - margin * 2, crop.Height - margin * 2);
+            if (highContrast)
+            {
+                using var attributes = new ImageAttributes();
+                attributes.SetColorMatrix(new ColorMatrix([
+                    [ -0.60f, -0.60f, -0.60f, 0, 0 ],
+                    [ -0.60f, -0.60f, -0.60f, 0, 0 ],
+                    [ -0.60f, -0.60f, -0.60f, 0, 0 ],
+                    [ 0, 0, 0, 1, 0 ],
+                    [ 1.15f, 1.15f, 1.15f, 0, 1 ]
+                ]));
+                graphics.DrawImage(source, target, region.X, region.Y, region.Width, region.Height, GraphicsUnit.Pixel, attributes);
+            }
+            else graphics.DrawImage(source, target, region, GraphicsUnit.Pixel);
+        }
+        var result = await RecognizeResultAsync(crop, cancellationToken);
+        return result.Lines.SelectMany((line, index) => line.Words.Select(word => new OcrWord(word.Text, index,
+            region.X + (word.BoundingRect.X - margin) / scale, region.Y + (word.BoundingRect.Y - margin) / scale,
+            word.BoundingRect.Width / scale, word.BoundingRect.Height / scale))).ToList();
     }
 
     private async Task<string> RecognizeAsync(Bitmap bitmap, CancellationToken cancellationToken)

@@ -17,6 +17,8 @@ FreightPlanner-windows*/
 active-session.json
 ignored-images.json
 plan-history/
+uex-cache/
+market.db
 test-reports/
 .appdata/
 .dotnet-cli/

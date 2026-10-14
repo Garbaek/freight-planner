@@ -14,11 +14,6 @@ public sealed class AccountClient
         _http = new HttpClient { BaseAddress = new Uri(normalized), Timeout = TimeSpan.FromSeconds(20) };
     }
 
-    // Registration only starts email verification; the account can sign in after its link is opened.
-    public Task<RegistrationResult> RegisterAsync(string email, string displayName, string password,
-        CancellationToken cancellationToken) => SendAsync<RegistrationResult>("api/auth/register",
-            new { email, displayName, password }, cancellationToken);
-
     public Task<RegistrationResult> ResendVerificationAsync(string email, CancellationToken cancellationToken) =>
         SendAsync<RegistrationResult>("api/auth/resend-verification", new { email }, cancellationToken);
 
@@ -70,6 +65,34 @@ public sealed class AccountClient
         };
         request.Headers.Add("X-Receiver-Token", receiverToken);
         using var response = await _http.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new AccountApiException(await ReadErrorAsync(response, cancellationToken), (int)response.StatusCode);
+    }
+
+    public async Task UploadCompletedTradeAsync(string accessToken, CommunityTradeUpload trade, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, "api/trades/completed") { Content = JsonContent.Create(trade) };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var response = await _http.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new AccountApiException(await ReadErrorAsync(response, cancellationToken), (int)response.StatusCode);
+    }
+
+    public async Task SetTradeProfileAsync(string accessToken, bool leaderboardOptIn, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Put, "api/trades/profile")
+        {
+            Content = JsonContent.Create(new { leaderboardOptIn })
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var response = await _http.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new AccountApiException(await ReadErrorAsync(response, cancellationToken), (int)response.StatusCode);
+    }
+
+    public async Task TrackLaunchAsync(string platform, string version, CancellationToken cancellationToken)
+    {
+        using var response = await _http.PostAsJsonAsync("api/usage/launch", new { platform, version }, cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new AccountApiException(await ReadErrorAsync(response, cancellationToken), (int)response.StatusCode);
     }
@@ -152,8 +175,28 @@ public sealed class RemoteCommand
 
 public sealed record MobilePlanSnapshot(long Revision, DateTime UpdatedAtUtc, string Title, string Summary,
     int CurrentStopIndex, bool CurrentStopCompleted,
-    IReadOnlyList<MobilePlanStop> Stops);
+    IReadOnlyList<MobilePlanStop> Stops,
+    IReadOnlyDictionary<string, long>? CheckedAtUnixMs = null);
 
 public sealed record MobilePlanStop(int Number, string Location, int TravelMinutesFromPrevious,
     IReadOnlyList<string> Deliveries, IReadOnlyList<string> Pickups, IReadOnlyList<string> Packing);
+
+public sealed class CommunityTradeUpload
+{
+    public Guid TradeId { get; set; }
+    public int CommodityId { get; set; }
+    public string CommodityName { get; set; } = "";
+    public int OriginId { get; set; }
+    public string OriginName { get; set; } = "";
+    public int DestinationId { get; set; }
+    public string DestinationName { get; set; } = "";
+    public string Ship { get; set; } = "";
+    public int Scu { get; set; }
+    public double PriceBuy { get; set; }
+    public double PriceSell { get; set; }
+    public double OperatingCosts { get; set; }
+    public DateTime BoughtUtc { get; set; }
+    public DateTime SoldUtc { get; set; }
+    public bool LeaderboardOptIn { get; set; }
+}
 

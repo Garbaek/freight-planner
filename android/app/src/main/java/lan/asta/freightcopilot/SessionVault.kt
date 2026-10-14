@@ -29,6 +29,8 @@ class SessionVault(context: Context) {
     fun email(): String? = preferences.getString("email", null)
     fun accessToken(): String? = preferences.getString("access_token", null)?.let(::decrypt)
     fun refreshToken(): String? = preferences.getString("refresh_token", null)?.let(::decrypt)
+    fun shareAnonymousUsage(): Boolean = preferences.getBoolean("share_anonymous_usage", false)
+    fun setShareAnonymousUsage(value: Boolean) = preferences.edit().putBoolean("share_anonymous_usage", value).apply()
     fun savePairedDevice(id: String, name: String) = preferences.edit()
         .putString("paired_device_id", id)
         .putString("paired_device_name", name)
@@ -40,7 +42,28 @@ class SessionVault(context: Context) {
         preferences.getStringSet("checklist_$planIdentity", emptySet()).orEmpty().toMutableSet()
     fun saveCheckedPlanItems(planIdentity: String, items: Set<String>) =
         preferences.edit().putStringSet("checklist_$planIdentity", items.toSet()).apply()
-    fun clear() = preferences.edit().clear().apply()
+    // When each step of a trade run was ticked, by step id, in epoch milliseconds.
+    fun stepTimes(runIdentity: String): MutableMap<String, Long> =
+        preferences.getStringSet("steps_$runIdentity", emptySet()).orEmpty().mapNotNull { entry ->
+            val at = entry.lastIndexOf('=')
+            val time = entry.substring(at + 1).toLongOrNull()
+            if (at <= 0 || time == null) null else entry.substring(0, at) to time
+        }.toMap().toMutableMap()
+    fun saveStepTimes(runIdentity: String, times: Map<String, Long>) =
+        preferences.edit().putStringSet("steps_$runIdentity", times.map { "${it.key}=${it.value}" }.toSet()).apply()
+    // The moment this tablet first showed the run: its clock starts there and survives a restart of the app.
+    fun runStart(runIdentity: String): Long {
+        val known = preferences.getLong("start_$runIdentity", 0L)
+        if (known > 0L) return known
+        val now = System.currentTimeMillis()
+        preferences.edit().putLong("start_$runIdentity", now).apply()
+        return now
+    }
+    fun forgetRun(runIdentity: String) = preferences.edit().remove("steps_$runIdentity").remove("start_$runIdentity").apply()
+    fun clear() {
+        val shareUsage = shareAnonymousUsage()
+        preferences.edit().clear().putBoolean("share_anonymous_usage", shareUsage).apply()
+    }
 
     private fun key(): SecretKey {
         val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }

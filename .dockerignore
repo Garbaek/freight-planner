@@ -1,0 +1,8 @@
+*
+!server/
+!server/FreightCopilot.Api/
+!server/FreightCopilot.Api/**
+!mapper/
+!mapper/**
+server/FreightCopilot.Api/bin/
+server/FreightCopilot.Api/obj/
