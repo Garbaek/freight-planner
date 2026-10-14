@@ -31,9 +31,22 @@ public sealed class UexRoute
     public int IdTerminalDestination { get; set; }
     public string? CommodityName { get; set; }
     public double? PriceOrigin { get; set; }
+    public double? PriceOriginUsers { get; set; }
+    public double? PriceOriginUsersRows { get; set; }
     public double? PriceDestination { get; set; }
+    public double? PriceDestinationUsers { get; set; }
+    public double? PriceDestinationUsersRows { get; set; }
     public double? ScuOrigin { get; set; }
+    public double? ScuOriginUsers { get; set; }
+    public double? ScuOriginUsersRows { get; set; }
     public double? ScuDestination { get; set; }
+    public double? ScuDestinationUsers { get; set; }
+    public double? ScuDestinationUsersRows { get; set; }
+    public double? VolatilityOrigin { get; set; }
+    public double? VolatilityDestination { get; set; }
+    public int? StatusOrigin { get; set; }
+    public int? StatusDestination { get; set; }
+    public int? Score { get; set; }
     public double? Distance { get; set; }
     public string? ContainerSizesOrigin { get; set; }
     public string? ContainerSizesDestination { get; set; }

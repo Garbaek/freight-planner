@@ -98,6 +98,12 @@ public sealed class MarketStore
         INSERT INTO trade_sales (trade_id, terminal_id, terminal_name, scu, price_per_scu, sold_utc, uex_id, uex_submission, uex_detail)
             SELECT id, destination_id, destination_name, scu, price_sell, sold_utc, uex_sell_id, uex_sell_submission, uex_sell_detail
             FROM trades WHERE price_sell IS NOT NULL AND price_sell > 0 AND sold_utc IS NOT NULL;
+        """,
+        // Preserve the route's intended buyer separately from the last actual sale terminal.
+        """
+        ALTER TABLE trades ADD COLUMN planned_destination_id INTEGER;
+        ALTER TABLE trades ADD COLUMN planned_destination_name TEXT NOT NULL DEFAULT '';
+        UPDATE trades SET planned_destination_id = destination_id, planned_destination_name = destination_name;
         """
     ];
 
@@ -108,7 +114,7 @@ public sealed class MarketStore
         "id, ship, origin_id, origin_name, destination_id, destination_name, commodity_id, commodity_name, scu, price_buy, price_sell, " +
         "loading_seconds, travel_seconds, unloading_seconds, operating_costs, bought_utc, sold_utc, notes, step_times, " +
         "uex_buy_id, uex_sell_id, uex_buy_submission, uex_sell_submission, uex_buy_detail, uex_sell_detail, " +
-        "tracker_id, tracker_submission, tracker_detail, planned_scu, planned_price_buy, planned_price_sell";
+        "tracker_id, tracker_submission, tracker_detail, planned_scu, planned_price_buy, planned_price_sell, planned_destination_id, planned_destination_name";
 
     private readonly string _connection;
 
@@ -214,7 +220,8 @@ public sealed class MarketStore
             ("$uexBuySubmission", trade.UexBuySubmission.ToString()), ("$uexSellSubmission", trade.UexSellSubmission.ToString()),
             ("$uexBuyDetail", trade.UexBuyDetail), ("$uexSellDetail", trade.UexSellDetail), ("$trackerId", trade.TrackerId),
             ("$trackerSubmission", trade.TrackerSubmission.ToString()), ("$trackerDetail", trade.TrackerDetail),
-            ("$plannedScu", trade.PlannedScu), ("$plannedBuy", trade.PlannedPriceBuy), ("$plannedSell", trade.PlannedPriceSell)
+            ("$plannedScu", trade.PlannedScu), ("$plannedBuy", trade.PlannedPriceBuy), ("$plannedSell", trade.PlannedPriceSell),
+            ("$plannedDestination", trade.PlannedDestinationId), ("$plannedDestinationName", trade.PlannedDestinationName)
         };
         if (trade.Id > 0)
             Command(db, transaction,
@@ -224,13 +231,15 @@ public sealed class MarketStore
                 "uex_buy_id = $uexBuyId, uex_sell_id = $uexSellId, uex_buy_submission = $uexBuySubmission, uex_sell_submission = $uexSellSubmission, " +
                 "uex_buy_detail = $uexBuyDetail, uex_sell_detail = $uexSellDetail, tracker_id = $trackerId, " +
                 "tracker_submission = $trackerSubmission, tracker_detail = $trackerDetail, planned_scu = $plannedScu, " +
-                "planned_price_buy = $plannedBuy, planned_price_sell = $plannedSell WHERE id = $id",
+                "planned_price_buy = $plannedBuy, planned_price_sell = $plannedSell, planned_destination_id = $plannedDestination, " +
+                "planned_destination_name = $plannedDestinationName WHERE id = $id",
                 values).ExecuteNonQuery();
         else
             trade.Id = Convert.ToInt64(Command(db, transaction,
                 $"INSERT INTO trades ({TradeColumns[4..]}) VALUES ($ship, $origin, $originName, $destination, $destinationName, $commodity, $commodityName, $scu, $buy, $sell, " +
                 "$loading, $travel, $unloading, $costs, $bought, $sold, $notes, $steps, $uexBuyId, $uexSellId, $uexBuySubmission, $uexSellSubmission, " +
-                "$uexBuyDetail, $uexSellDetail, $trackerId, $trackerSubmission, $trackerDetail, $plannedScu, $plannedBuy, $plannedSell); SELECT last_insert_rowid()", values).ExecuteScalar());
+                "$uexBuyDetail, $uexSellDetail, $trackerId, $trackerSubmission, $trackerDetail, $plannedScu, $plannedBuy, $plannedSell, " +
+                "$plannedDestination, $plannedDestinationName); SELECT last_insert_rowid()", values).ExecuteScalar());
 
         // Keep sale IDs stable: UEX uses each ID as an independent retry/checkpoint key. The in-memory
         // list is still authoritative, so rows removed by an editor are deleted inside this transaction.
@@ -281,7 +290,8 @@ public sealed class MarketStore
                     UexSellId = reader.IsDBNull(20) ? null : reader.GetInt64(20), UexBuySubmission = Enum.Parse<SubmissionState>(reader.GetString(21)),
                     UexSellSubmission = Enum.Parse<SubmissionState>(reader.GetString(22)), UexBuyDetail = reader.GetString(23), UexSellDetail = reader.GetString(24),
                     TrackerId = reader.GetString(25), TrackerSubmission = Enum.Parse<SubmissionState>(reader.GetString(26)), TrackerDetail = reader.GetString(27),
-                    PlannedScu = Whole(reader, 28) ?? reader.GetInt32(8), PlannedPriceBuy = Number(reader, 29), PlannedPriceSell = Number(reader, 30)
+                    PlannedScu = Whole(reader, 28) ?? reader.GetInt32(8), PlannedPriceBuy = Number(reader, 29), PlannedPriceSell = Number(reader, 30),
+                    PlannedDestinationId = Whole(reader, 31) ?? reader.GetInt32(4), PlannedDestinationName = reader.GetString(32)
                 });
         var byId = rows.ToDictionary(x => x.Id);
         using var sales = Command(db, null,
@@ -392,6 +402,8 @@ public sealed class MarketStore
 
     private static void Normalize(TradeRecord trade)
     {
+        if (trade.PlannedDestinationId <= 0) trade.PlannedDestinationId = trade.DestinationId;
+        if (trade.PlannedDestinationName.Length == 0) trade.PlannedDestinationName = trade.DestinationName;
         if (trade.PlannedScu <= 0) trade.PlannedScu = trade.Scu;
         trade.PlannedPriceBuy ??= trade.PriceBuy > 0 ? trade.PriceBuy : null;
         trade.PlannedPriceSell ??= trade.PriceSell;

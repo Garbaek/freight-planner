@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Trade ideas now separate the reported maximum from a conservative **Likely SCU** and **Expected profit**. The estimate uses UEX user-trade averages plus the pilot's own actual purchase fills and buyer acceptance from earlier runs.
+- Starting a run uses the likely load and its valid crate breakdown by default; untick **Start with likely SCU** to deliberately try the reported maximum.
+- Routes have a Low / Medium / High / Unknown risk explanation using UEX sample counts, price volatility and route score. Hover the risk cell to see the evidence instead of trusting a single opaque ranking.
+- Trade ideas rank by expected profit by default; **Maximum profit** remains available for comparing the theoretical upside.
 - Windows and Android now ask for the actual SCU and unit price at purchase instead of silently treating the route estimate as fact. The plan and the real cargo lot are kept separately.
 - **Record sale** can be used repeatedly: a terminal may buy only part of the cargo, the remaining SCU stays visible, and the next transaction can use the planned buyer or another UEX-priced buyer. The run completes only when all bought SCU are accounted for.
 - Optional personal UEX trade-history sync adds the actual purchase and every actual sale transaction separately, retaining each returned UEX ID so retries do not duplicate a transaction.

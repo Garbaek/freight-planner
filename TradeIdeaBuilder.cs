@@ -1,7 +1,17 @@
 namespace FreightCopilot;
 
-// SizesKnown is false when neither UEX nor the player has the crate sizes for one end, so every size was assumed.
-public sealed record TradeIdea(UexRoute Route, PriceQuote Buy, PriceQuote Sell, CrateLoad Load, double Profit, bool SizesKnown);
+public enum RouteRisk { Low, Medium, Unknown, High }
+
+// Profit is the best case from the reported stock/demand. LikelyScu and ExpectedProfit temper it with
+// UEX user-trade averages and this pilot's actual outcomes; they never pretend those community figures are live stock.
+public sealed record TradeIdea(UexRoute Route, PriceQuote Buy, PriceQuote Sell, CrateLoad Load, double Profit, bool SizesKnown)
+{
+    public int LikelyScu { get; init; } = Load.Scu;
+    public CrateLoad LikelyLoad { get; init; } = Load;
+    public double ExpectedProfit { get; init; } = Profit;
+    public RouteRisk Risk { get; init; } = RouteRisk.Unknown;
+    public string RiskDetail { get; init; } = "No actual trade samples yet; treat stock and demand as an estimate.";
+}
 
 // The runs worth showing, best profit first, and how many more were left out for selling in another star system.
 public sealed record TradeIdeaList(List<TradeIdea> Ideas, int Elsewhere);
@@ -13,8 +23,10 @@ public static class TradeIdeaBuilder
     private static readonly int[] CrateSizes = [1, 2, 4, 8, 16, 24, 32];
 
     public static TradeIdeaList Build(UexTerminal origin, IEnumerable<UexRoute> routes, ShipProfile ship, bool otherSystems, PriceMode mode,
-        LocalPrices local, Func<int, int, UexPrice?> uexPrice, DateTime nowUtc, TimeSpan localMaxAge)
+        LocalPrices local, Func<int, int, UexPrice?> uexPrice, DateTime nowUtc, TimeSpan localMaxAge,
+        IReadOnlyCollection<TradeRecord>? history = null)
     {
+        history ??= [];
         var ideas = new List<TradeIdea>();
         var covered = new HashSet<(int Destination, int Commodity)>();
         var elsewhere = 0;
@@ -63,7 +75,56 @@ public static class TradeIdeaBuilder
             if (sizes.Count == 0) return;
             var load = CratePlanner.Plan(scu, sizes, ship.Grids);
             if (load.Scu > 0)
-                ideas.Add(new TradeIdea(route, buy, sell, load, load.Scu * margin, !string.IsNullOrWhiteSpace(buy.ContainerSizes) && !string.IsNullOrWhiteSpace(sell.ContainerSizes)));
+            {
+                var evidence = new List<string>();
+                var likelyRatio = 1d;
+                AddUexEvidence(route.ScuOriginUsers, route.ScuOriginUsersRows, "bought", load.Scu);
+                AddUexEvidence(route.ScuDestinationUsers, route.ScuDestinationUsersRows, "sold", load.Scu);
+
+                var own = history.Where(x => x.OriginId == origin.Id && x.CommodityId == route.IdCommodity &&
+                    x.PlannedDestinationId == route.IdTerminalDestination && x.PlannedScu > 0).ToList();
+                if (own.Count > 0)
+                {
+                    var fill = own.Average(x => Math.Clamp(x.Scu / (double)x.PlannedScu, 0, 1));
+                    var soldOutcomes = own.Where(x => x.Sales.Count > 0).ToList();
+                    var accepted = soldOutcomes.Count == 0 ? (double?)null : soldOutcomes.Average(x => x.Scu > 0
+                        ? Math.Clamp(x.Sales.Where(s => s.TerminalId == route.IdTerminalDestination).Sum(s => s.Scu) / (double)x.Scu, 0, 1)
+                        : 0);
+                    // Purchase fill is measured against the plan; buyer acceptance is measured against what
+                    // was actually bought. Together they estimate how much of the original plan sold here.
+                    likelyRatio = Math.Min(likelyRatio, fill * (accepted ?? 1));
+                    evidence.Add($"Your {own.Count:N0} run{(own.Count == 1 ? "" : "s")}: bought {fill:P0} of plan" +
+                        (accepted is { } share ? $"; this buyer accepted {share:P0} in {soldOutcomes.Count:N0} sale attempt{(soldOutcomes.Count == 1 ? "" : "s")}." : "."));
+                }
+
+                var volatility = new[] { route.VolatilityOrigin, route.VolatilityDestination }.Where(x => x is >= 0).DefaultIfEmpty().Max() ?? 0;
+                if (volatility > 0) evidence.Add($"UEX price volatility: {volatility:P0}.");
+                if (route.Score is { } score) evidence.Add($"UEX route score: {score:N0}.");
+
+                var likelyLimit = Math.Max(1, (int)Math.Floor(load.Scu * likelyRatio));
+                var likelyLoad = CratePlanner.Plan(likelyLimit, sizes, ship.Grids);
+                var likelyScu = Math.Min(load.Scu, likelyLoad.Scu);
+                var risk = evidence.Count == 0 ? RouteRisk.Unknown
+                    : likelyScu < load.Scu * .55 || volatility >= .25 ? RouteRisk.High
+                    : likelyScu < load.Scu * .85 || volatility >= .12 ? RouteRisk.Medium
+                    : RouteRisk.Low;
+                ideas.Add(new TradeIdea(route, buy, sell, load, load.Scu * margin,
+                    !string.IsNullOrWhiteSpace(buy.ContainerSizes) && !string.IsNullOrWhiteSpace(sell.ContainerSizes))
+                {
+                    LikelyScu = likelyScu,
+                    LikelyLoad = likelyLoad,
+                    ExpectedProfit = likelyScu * margin,
+                    Risk = risk,
+                    RiskDetail = evidence.Count > 0 ? string.Join(" ", evidence) : "No actual trade samples yet; treat stock and demand as an estimate."
+                });
+
+                void AddUexEvidence(double? average, double? rows, string verb, int plannedScu)
+                {
+                    if (average is not > 0 || rows is not >= 2) return;
+                    likelyRatio = Math.Min(likelyRatio, Math.Clamp(average.Value / plannedScu, 0, 1));
+                    evidence.Add($"UEX user trades {verb} {average:N0} SCU on average ({rows:N0} samples). ");
+                }
+            }
         }
 
         PriceQuote? RouteQuote(double? price, double? scu, string? sizes, int terminalId, int commodityId) =>

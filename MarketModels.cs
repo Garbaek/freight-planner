@@ -69,6 +69,8 @@ public sealed class TradeRecord
     public int CommodityId { get; set; }
     public string CommodityName { get; set; } = "";
     // The route suggestion, kept separately from what the terminal actually allowed the player to buy.
+    public int PlannedDestinationId { get; set; }
+    public string PlannedDestinationName { get; set; } = "";
     public int PlannedScu { get; set; }
     public double? PlannedPriceBuy { get; set; }
     public double? PlannedPriceSell { get; set; }

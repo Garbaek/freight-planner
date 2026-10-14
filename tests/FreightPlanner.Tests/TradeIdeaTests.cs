@@ -40,8 +40,9 @@ public class TradeIdeaTests
     };
 
     private static TradeIdeaList Build(PriceMode mode, IEnumerable<MarketObservation> observations, bool otherSystems = false, ShipProfile? ship = null,
-        IEnumerable<UexRoute>? routes = null) =>
-        TradeIdeaBuilder.Build(PssLambda, routes ?? Routes, ship ?? Nomad, otherSystems, mode, new LocalPrices(observations), (t, c) => Uex.GetValueOrDefault((t, c)), Now, MaxAge);
+        IEnumerable<UexRoute>? routes = null, IReadOnlyCollection<TradeRecord>? history = null) =>
+        TradeIdeaBuilder.Build(PssLambda, routes ?? Routes, ship ?? Nomad, otherSystems, mode, new LocalPrices(observations),
+            (t, c) => Uex.GetValueOrDefault((t, c)), Now, MaxAge, history);
 
     [Fact]
     public void Uex_only_gives_uexs_own_runs()
@@ -181,5 +182,49 @@ public class TradeIdeaTests
         Assert.Equal(CrateBasis.Theoretical, dymantium.Load.Basis);
         Assert.Equal(51, dymantium.Load.Scu);
         Assert.Equal("up to 8 SCU each", dymantium.Load.Crates);
+    }
+
+    [Fact]
+    public void Uex_user_trade_samples_turn_theoretical_stock_into_a_likely_load()
+    {
+        var route = Route(Compboard, "Compboard", Levski, 28_104, 34_000, 60, 88, "1,2", "1,2,4,8,16,24,32");
+        route.ScuOriginUsers = 10;
+        route.ScuOriginUsersRows = 8;
+        route.ScuDestinationUsers = 7;
+        route.ScuDestinationUsersRows = 12;
+        route.VolatilityDestination = .18;
+        route.Score = 420;
+
+        var idea = Assert.Single(Build(PriceMode.UexOnly, [], routes: [route]).Ideas);
+
+        Assert.Equal(24, idea.Load.Scu);
+        Assert.Equal(7, idea.LikelyScu);
+        Assert.Equal("3 × 2 SCU + 1 × 1 SCU", idea.LikelyLoad.Crates);
+        Assert.Equal(7 * (34_000 - 28_104), idea.ExpectedProfit);
+        Assert.Equal(RouteRisk.High, idea.Risk);
+        Assert.Contains("12 samples", idea.RiskDetail);
+        Assert.Contains("volatility", idea.RiskDetail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Own_actual_results_make_a_route_risk_personal()
+    {
+        var history = new TradeRecord
+        {
+            OriginId = 843, CommodityId = Compboard, PlannedDestinationId = Levski, PlannedScu = 24,
+            Scu = 12, PriceBuy = 28_200,
+            Sales =
+            [
+                new TradeSale { TerminalId = Levski, Scu = 6, PricePerScu = 34_000 },
+                new TradeSale { TerminalId = 779, Scu = 6, PricePerScu = 33_000 }
+            ]
+        };
+
+        var idea = Build(PriceMode.UexOnly, [], routes: [Routes[0]], history: [history]).Ideas.Single();
+
+        Assert.Equal(6, idea.LikelyScu);
+        Assert.Equal(RouteRisk.High, idea.Risk);
+        Assert.Contains("bought 50", idea.RiskDetail);
+        Assert.Contains("accepted 50", idea.RiskDetail);
     }
 }

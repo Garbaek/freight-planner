@@ -197,6 +197,8 @@ public sealed class MarketStoreTests : IDisposable
         Assert.Equal(2, completed.Sales.Count);
         Assert.Equal(80, completed.SoldScu);
         Assert.Equal(0, completed.RemainingScu);
+        Assert.Equal(20, completed.PlannedDestinationId);
+        Assert.Equal(21, completed.DestinationId);
         Assert.Equal((30 * 145d + 50 * 140d) / 80d, completed.PriceSell);
         Assert.Equal(901, completed.Sales[0].UexId);
 
@@ -225,7 +227,7 @@ public sealed class MarketStoreTests : IDisposable
     public void The_schema_version_is_recorded_and_a_newer_database_is_refused()
     {
         var store = new MarketStore(_directory);
-        Assert.Equal(5L, Pragma(store.PathOnDisk, "PRAGMA user_version"));
+        Assert.Equal(6L, Pragma(store.PathOnDisk, "PRAGMA user_version"));
 
         Pragma(store.PathOnDisk, "PRAGMA user_version = 99");
         Assert.Throws<InvalidOperationException>(() => new MarketStore(_directory));
@@ -256,12 +258,14 @@ public sealed class MarketStoreTests : IDisposable
         Pragma(store.PathOnDisk, "ALTER TABLE trades DROP COLUMN planned_scu");
         Pragma(store.PathOnDisk, "ALTER TABLE trades DROP COLUMN planned_price_buy");
         Pragma(store.PathOnDisk, "ALTER TABLE trades DROP COLUMN planned_price_sell");
+        Pragma(store.PathOnDisk, "ALTER TABLE trades DROP COLUMN planned_destination_id");
+        Pragma(store.PathOnDisk, "ALTER TABLE trades DROP COLUMN planned_destination_name");
         Pragma(store.PathOnDisk, "DROP TABLE trade_sales");
         Pragma(store.PathOnDisk, "PRAGMA user_version = 1");
 
         var upgraded = new MarketStore(_directory);
 
-        Assert.Equal(5L, Pragma(upgraded.PathOnDisk, "PRAGMA user_version"));
+        Assert.Equal(6L, Pragma(upgraded.PathOnDisk, "PRAGMA user_version"));
         var read = Assert.Single(upgraded.Trades());
         Assert.Equal("", read.StepTimes);
         Assert.Equal(34_650, read.PriceSell);

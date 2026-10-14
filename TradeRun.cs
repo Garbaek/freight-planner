@@ -192,6 +192,7 @@ public sealed class TradeRun
         {
             (record.Ship, record.OriginId, record.OriginName) = (Ship, OriginId, Origin);
             (record.DestinationId, record.DestinationName) = (DestinationId, Destination);
+            (record.PlannedDestinationId, record.PlannedDestinationName) = (DestinationId, Destination);
             (record.CommodityId, record.CommodityName) = (CommodityId, Commodity);
             (record.PlannedScu, record.PlannedPriceBuy, record.PlannedPriceSell) = (Scu, PriceBuy, PriceSell);
             (record.Scu, record.PriceBuy) = (BoughtScu, ActualBuyPrice);

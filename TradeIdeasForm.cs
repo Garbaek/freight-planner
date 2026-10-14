@@ -2,7 +2,7 @@ namespace FreightCopilot;
 
 public sealed class TradeIdeasForm : Form
 {
-    private const int SellAtColumn = 1, BuyColumn = 2, SellColumn = 3, CratesColumn = 8, ConfidenceColumn = 11;
+    private const int SellAtColumn = 1, BuyColumn = 2, SellColumn = 3, CratesColumn = 10, ConfidenceColumn = 13, RiskColumn = 14;
 
     // Title and subtitle of the dark header, per tab.
     private readonly (string Title, string Text)[] _headers;
@@ -16,6 +16,8 @@ public sealed class TradeIdeasForm : Form
     private readonly ListBox _stations = new() { Dock = DockStyle.Fill, IntegralHeight = false };
     private readonly CheckBox _otherSystems = new() { Text = "Include other star systems", AutoSize = true, Margin = new Padding(3, 6, 12, 0) };
     private readonly ComboBox _mode = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 150, Margin = new Padding(3, 3, 12, 0) };
+    private readonly ComboBox _ranking = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 145, Margin = new Padding(3, 3, 12, 0) };
+    private readonly CheckBox _planLikely = new() { Text = "Start with likely SCU", Checked = true, AutoSize = true, Margin = new Padding(3, 6, 12, 0) };
     private readonly Button _quickReport = new() { Text = "Quick report", AutoSize = true, Margin = new Padding(3, 1, 12, 0) };
     private readonly Button _sendTablet = new() { Text = "Start run", AutoSize = true, Enabled = false, Margin = new Padding(3, 1, 12, 0) };
     private readonly Label _status = new() { Text = "Loading stations from UEX…", AutoSize = true, Margin = new Padding(3, 8, 3, 0) };
@@ -50,7 +52,7 @@ public sealed class TradeIdeasForm : Form
         catch (Exception ex) { storeProblem = ex.Message; }
         _context = new TradeContext(host, new UexClient(appDirectory), store);
         Text = "Freight Planner — Trading";
-        Width = 1640;
+        Width = 1800;
         Height = 780;
         MinimumSize = new Size(1000, 560);
         StartPosition = FormStartPosition.CenterParent;
@@ -77,20 +79,26 @@ public sealed class TradeIdeasForm : Form
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Sell at", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, MinimumWidth = 180 });
         _grid.Columns.Add(Number("Buy / SCU", 78));
         _grid.Columns.Add(Number("Sell / SCU", 78));
-        _grid.Columns.Add(Number("SCU", 48));
+        _grid.Columns.Add(Number("Max SCU", 58, "Best case from the last reported stock and demand."));
+        _grid.Columns.Add(Number("Likely SCU", 64, "Conservative estimate from UEX user trades and your own outcomes; not live stock."));
         _grid.Columns.Add(Number("Outlay", 85));
-        _grid.Columns.Add(Number("Profit", 85));
+        _grid.Columns.Add(Number("Max profit", 85));
+        _grid.Columns.Add(Number("Expected", 85, "Likely SCU multiplied by the current reported margin."));
         _grid.Columns.Add(Number("Dist. (Gm)", 80, "Quantum travel distance in gigametres; 0 is the same planet or moon."));
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Crates", Width = 280, ToolTipText = "What to ask for, and whether it was placed on the ship's real cargo grid." });
         _grid.Columns.Add(Number("Age (h)", 60, "Hours since the older of the two prices was reported to UEX or seen by you."));
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Source", Width = 126, ToolTipText = "Where the buy and the sell price come from. Hover over a price for the details." });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Confidence", Width = 84, ToolTipText = "High: your own price from the last 12 hours. Medium: your own within the trusted period, or a UEX report from the last day. Low: a UEX report up to a week old. Stale: older than that. The weaker of the two prices decides." });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Route risk", Width = 88, ToolTipText = "Uses UEX user-trade samples, volatility and your own actual purchase/sale results. It is statistical, never live stock." });
 
         _mode.Items.AddRange(["UEX + my prices", "UEX only", "My prices only"]);
         _mode.SelectedIndex = store is null ? (int)PriceMode.UexOnly : (int)host.Settings.PriceMode;
+        _ranking.Items.AddRange(["Expected profit", "Maximum profit"]);
+        _ranking.SelectedIndex = 0;
         _mode.Enabled = _quickReport.Enabled = store is not null;
         var footer = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 46, Padding = new Padding(10, 6, 10, 6), BackColor = Color.White, WrapContents = false };
-        footer.Controls.AddRange([_otherSystems, new Label { Text = "Prices", AutoSize = true, Margin = new Padding(3, 8, 3, 0) }, _mode, _quickReport, _sendTablet, _status]);
+        footer.Controls.AddRange([_otherSystems, new Label { Text = "Prices", AutoSize = true, Margin = new Padding(3, 8, 3, 0) }, _mode,
+            new Label { Text = "Rank", AutoSize = true, Margin = new Padding(3, 8, 3, 0) }, _ranking, _planLikely, _quickReport, _sendTablet, _status]);
 
         var ideas = new TabPage("Trade ideas");
         ideas.Controls.Add(_grid);
@@ -122,6 +130,7 @@ public sealed class TradeIdeasForm : Form
             host.SaveSettings();
             _context.NotifyChanged();
         };
+        _ranking.SelectedIndexChanged += (_, _) => ShowRoutes();
         _quickReport.Click += async (_, _) =>
         {
             if (_reporter is null) return;
@@ -153,6 +162,7 @@ public sealed class TradeIdeasForm : Form
     {
         if (SelectedIdea is not { } idea || _origin is not { } origin) return;
         var route = idea.Route;
+        var plannedLoad = _planLikely.Checked ? idea.LikelyLoad : idea.Load;
         var destination = _terminals.FirstOrDefault(x => x.Id == route.IdTerminalDestination);
         var alternatives = _terminals
             .Select(x => new { Terminal = x, Quote = _context.UexQuote(x.Id, route.IdCommodity, buy: false) })
@@ -167,7 +177,7 @@ public sealed class TradeIdeasForm : Form
                 destination?.StarSystemName ?? route.DestinationStarSystemName ?? "", destination?.FullName ?? "", idea.Sell.Price));
         var run = new TradeRun(_ship.Name, origin, route.IdTerminalDestination, destination?.Label ?? route.DestinationTerminalName ?? "Unknown",
             destination?.StarSystemName ?? route.DestinationStarSystemName ?? "", route.IdCommodity, route.CommodityName ?? "Unknown",
-            idea.Load.Scu, idea.Buy.Price, idea.Sell.Price, idea.Load.Crates, route.Distance, SourceOf(idea),
+            plannedLoad.Scu, idea.Buy.Price, idea.Sell.Price, plannedLoad.Crates, route.Distance, SourceOf(idea),
             PriceSelector.Rate(idea.Buy, idea.Sell, DateTime.UtcNow).ToString(), DateTime.UtcNow, destination?.FullName ?? "", alternatives);
         _sendTablet.Enabled = false;
         _status.Text = "Starting the run monitor…";
@@ -261,18 +271,27 @@ public sealed class TradeIdeasForm : Form
         var now = DateTime.UtcNow;
         var mode = (PriceMode)_mode.SelectedIndex;
         List<MarketObservation> seen = [];
+        List<TradeRecord> history = [];
         string? problem = null;
         if (mode != PriceMode.UexOnly && _context.HasStore)
         {
             try { seen = _context.Store.Observations(); }
             catch (Microsoft.Data.Sqlite.SqliteException ex) { problem = $" Your own prices could not be read ({ex.Message}), so these are UEX's alone."; }
         }
+        if (_context.HasStore)
+        {
+            try { history = _context.Store.Trades(); }
+            catch (Microsoft.Data.Sqlite.SqliteException ex) { problem += $" Your trade history could not be read ({ex.Message}), so route risk uses UEX alone."; }
+        }
         var local = new LocalPrices(seen);
         var (ideas, elsewhere) = TradeIdeaBuilder.Build(origin, routes.Rows, _ship, _otherSystems.Checked, mode, local, _context.Price, now,
-            TimeSpan.FromHours(_context.Settings.LocalPriceMaxAgeHours));
+            TimeSpan.FromHours(_context.Settings.LocalPriceMaxAgeHours), history);
+        var ranked = (_ranking.SelectedIndex == 1
+            ? ideas.OrderByDescending(x => x.Profit)
+            : ideas.OrderByDescending(x => x.ExpectedProfit).ThenBy(x => x.Risk).ThenByDescending(x => x.Profit)).ToList();
 
         _grid.Rows.Clear();
-        foreach (var idea in ideas)
+        foreach (var idea in ranked)
         {
             var (route, buy, sell, load, profit, sizesKnown) = idea;
             var commodity = (_illegal.Contains(route.IdCommodity) ? "Illegal — " : "") + (route.CommodityName ?? "Unknown");
@@ -281,10 +300,11 @@ public sealed class TradeIdeasForm : Form
                 : sameSystem && !string.IsNullOrWhiteSpace(terminal.PlanetName) ? $"{terminal.Label} — {terminal.PlanetName}" : terminal.ToString();
             var oldest = buy.AsOfUtc < sell.AsOfUtc ? buy.AsOfUtc : sell.AsOfUtc;
             var confidence = PriceSelector.Rate(buy, sell, now);
-            var row = _grid.Rows[_grid.Rows.Add(commodity, destination, buy.Price, sell.Price, (double)load.Scu, load.Scu * buy.Price, profit, route.Distance,
+            var row = _grid.Rows[_grid.Rows.Add(commodity, destination, buy.Price, sell.Price, (double)load.Scu, (double)idea.LikelyScu,
+                load.Scu * buy.Price, profit, idea.ExpectedProfit, route.Distance,
                 (load.Basis == CrateBasis.Grid ? load.Crates : $"{load.Crates} — theoretical") + (sizesKnown ? "" : " (sizes unknown)"),
                 buy.AsOfUtc is null || sell.AsOfUtc is null ? null : (double?)Math.Max(0, Math.Round((now - oldest!.Value).TotalHours)),
-                SourceOf(idea), confidence.ToString())];
+                SourceOf(idea), confidence.ToString(), idea.Risk.ToString())];
             row.Tag = idea;
             if (terminal is { FullName.Length: > 0 })
                 row.Cells[SellAtColumn].ToolTipText = $"{terminal.FullName} ({terminal.Region}). A city has several commodity terminals; this is the one that buys it.";
@@ -301,17 +321,25 @@ public sealed class TradeIdeasForm : Form
                 Confidence.Stale or Confidence.Unknown => Color.Firebrick,
                 _ => row.DefaultCellStyle.ForeColor
             };
+            row.Cells[RiskColumn].ToolTipText = idea.RiskDetail;
+            row.Cells[RiskColumn].Style.ForeColor = idea.Risk switch
+            {
+                RouteRisk.Low => Color.FromArgb(23, 128, 93),
+                RouteRisk.High => Color.Firebrick,
+                RouteRisk.Unknown => Color.DarkGoldenrod,
+                _ => row.DefaultCellStyle.ForeColor
+            };
         }
         _grid.ClearSelection();
 
         var hidden = elsewhere > 0 ? $" {elsewhere:N0} more sell in another star system." : "";
         var version = routes.Rows.Select(x => x.GameVersionOrigin).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
-        var mine = ideas.Count(x => x.Buy.IsLocal || x.Sell.IsLocal);
+        var mine = ranked.Count(x => x.Buy.IsLocal || x.Sell.IsLocal);
         _status.Text = ideas.Count == 0
             ? mode == PriceMode.LocalOnly
                 ? $"You have no confirmed buy price at {Station} with a confirmed sell price elsewhere yet.{hidden}"
                 : $"UEX knows nothing to buy at {Station} that sells at a profit.{hidden}"
-            : $"{ideas.Count:N0} run(s), best profit first.{hidden}" + (mine > 0 ? $" {mine:N0} use your own prices (green)." : "") +
+            : $"{ideas.Count:N0} run(s), ranked by {(_ranking.SelectedIndex == 1 ? "maximum" : "expected")} profit.{hidden}" + (mine > 0 ? $" {mine:N0} use your own prices (green)." : "") +
               $" UEX data fetched {routes.FetchedUtc.ToLocalTime():HH:mm}" + (version is null ? "." : $", game version {version}.");
         _status.Text += problem;
     }
