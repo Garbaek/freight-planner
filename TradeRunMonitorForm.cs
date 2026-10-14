@@ -101,6 +101,11 @@ public sealed class TradeRunMonitorForm : Form
             var done = _run.Done.ContainsKey(step.Id);
             var other = !done && step.Alternative.Length > 0 && _run.Steps.Any(x => x.Id != step.Id && x.Alternative == step.Alternative && _run.Done.ContainsKey(x.Id));
             _checks[step.Id].Checked = done;
+            if (step.Id == TradeRun.Bought && _run.IsBought)
+                _checks[step.Id].Text = $"PURCHASED {_run.BoughtScu:N0} SCU @ {_run.ActualBuyPrice:N2}";
+            else if (step.Id == TradeRun.Sold && !_run.IsCompleted)
+                _checks[step.Id].Text = _run.SoldScu > 0 ? $"RECORD ANOTHER SALE ({_run.RemainingScu:N0} SCU REMAINING)" : "RECORD SALE";
+            _checks[step.Id].Enabled = step.Id != TradeRun.Sold || _run.IsBought && _run.RemainingScu > 0;
             _checks[step.Id].ForeColor = done ? Color.FromArgb(124, 211, 177) : other ? Color.FromArgb(102, 135, 141) : Color.FromArgb(216, 231, 231);
             _times[step.Id].Text = timeline.TryGetValue(step.Id, out var tick) ? $"{tick.Utc.ToLocalTime():HH:mm:ss}   +{Span(tick.Seconds)}" : "";
         }
@@ -108,10 +113,13 @@ public sealed class TradeRunMonitorForm : Form
 
         var end = _run.Done.GetValueOrDefault(TradeRun.Sold, DateTime.UtcNow);
         var seconds = Math.Max(0, (int)Math.Round((end - _run.StartedUtc).TotalSeconds));
-        var rate = seconds < 60 ? "RATE AFTER THE FIRST MINUTE" : $"{_run.Profit * 3600 / seconds:N0} aUEC / H   //   {_run.Profit * 60 / seconds:N0} aUEC / MIN";
+        var profit = _run.IsCompleted ? _run.RealizedRevenue - _run.BoughtScu * _run.ActualBuyPrice : _run.Profit;
+        var rate = seconds < 60 ? "RATE AFTER THE FIRST MINUTE" : $"{profit * 3600 / seconds:N0} aUEC / H   //   {profit * 60 / seconds:N0} aUEC / MIN";
         _totals.Text = _run.IsCompleted
-            ? $"RUN COMPLETE   {Span(seconds)}   //   PLANNED PROFIT {_run.Profit:N0} aUEC\r\n{rate}"
-            : $"TIME SPENT   {Span(seconds)}\r\nIF SOLD NOW   {rate}";
+            ? $"RUN COMPLETE   {Span(seconds)}   //   ACTUAL GROSS PROFIT {profit:N0} aUEC\r\n{rate}"
+            : _run.SoldScu > 0
+                ? $"TIME SPENT   {Span(seconds)}   //   {_run.SoldScu:N0} SOLD   //   {_run.RemainingScu:N0} SCU REMAINING\r\nREALIZED REVENUE {_run.RealizedRevenue:N0} aUEC"
+                : $"TIME SPENT   {Span(seconds)}\r\nIF SOLD AS PLANNED   {rate}";
         if (message is not null) _status.Text = message;
     }
 
@@ -121,7 +129,7 @@ public sealed class TradeRunMonitorForm : Form
         check.Enabled = false;
         try { RefreshFromRun(await _change(step, check.Checked)); }
         catch (Exception ex) { RefreshFromRun($"The checkpoint could not be saved: {ex.Message}"); }
-        finally { check.Enabled = true; }
+        finally { check.Enabled = step.Id != TradeRun.Sold || _run.IsBought && _run.RemainingScu > 0; }
     }
 
     private static Panel Card(string heading, Color accent, string headline, string lines)

@@ -20,6 +20,8 @@ import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Spinner
+import android.widget.ArrayAdapter
 import android.widget.TextView
 import com.google.zxing.integration.android.IntentIntegrator
 import java.text.SimpleDateFormat
@@ -629,10 +631,12 @@ class MainActivity : Activity() {
                 bottomMargin = dp(8)
             }
         }
-        cards.addView(tradeCard("BUY", Color.rgb(101, 216, 222), "${trade.scu} SCU ${trade.commodity}".uppercase(), listOfNotNull(
+        val shownBuyScu = if (trade.boughtScu > 0) trade.boughtScu else trade.scu
+        val shownBuyPrice = trade.actualBuy ?: trade.buy
+        cards.addView(tradeCard(if (trade.boughtScu > 0) "PURCHASED" else "BUY", Color.rgb(101, 216, 222), "$shownBuyScu SCU ${trade.commodity}".uppercase(), listOfNotNull(
             "AT ${trade.from.uppercase()}",
             trade.fromDetail.takeIf { it.isNotEmpty() }?.uppercase(),
-            "${money(trade.buy)} aUEC / SCU   //   OUTLAY ${money(trade.outlay)} aUEC",
+            "${money(shownBuyPrice)} aUEC / SCU   //   OUTLAY ${money(shownBuyScu * shownBuyPrice)} aUEC",
             "CRATES   ${trade.crates.uppercase()}"
         ), addStartMargin = false))
         cards.addView(tradeCard("HAUL TO AND SELL AT", Color.rgb(230, 200, 121), trade.to.uppercase(), listOfNotNull(
@@ -692,6 +696,14 @@ class MainActivity : Activity() {
                 isChecked = time != null
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 setOnCheckedChangeListener { _, checked ->
+                    if (!demoMode && checked && step.id == "bought") {
+                        showTradePurchaseDialog(plan, trade)
+                        return@setOnCheckedChangeListener
+                    }
+                    if (!demoMode && checked && step.id == "sold") {
+                        showTradeSaleDialog(plan, trade)
+                        return@setOnCheckedChangeListener
+                    }
                     val latest = vault.stepTimes(identity)
                     if (checked) {
                         // Cargo is loaded one way or the other, not both.
@@ -752,8 +764,10 @@ class MainActivity : Activity() {
         val hours = elapsed / 3_600_000.0
         val rate = if (elapsed < 60_000L) "RATE AFTER THE FIRST MINUTE"
             else "${money(trade.profit / hours)} aUEC / H   //   ${money(trade.profit / (hours * 60))} aUEC / MIN"
-        return if (soldAt != null) "RUN COMPLETE   ${span(elapsed)}   //   PLANNED PROFIT ${money(trade.profit)} aUEC\n$rate"
-            else "TIME SPENT   ${span(elapsed)}\nIF SOLD NOW   $rate"
+        val actualProfit = trade.realizedRevenue - trade.boughtScu * (trade.actualBuy ?: trade.buy)
+        return if (soldAt != null) "RUN COMPLETE   ${span(elapsed)}   //   ACTUAL GROSS PROFIT ${money(actualProfit)} aUEC\n$rate"
+            else if (trade.soldScu > 0) "TIME SPENT   ${span(elapsed)}   //   ${trade.soldScu} SOLD   //   ${trade.remainingScu} SCU REMAINING\nREALIZED REVENUE ${money(trade.realizedRevenue)} aUEC"
+            else "TIME SPENT   ${span(elapsed)}\nIF SOLD AS PLANNED   $rate"
     }
 
     private fun startRunClock(view: TextView, trade: TradeRun, started: Long, soldAt: Long?) {
@@ -850,6 +864,67 @@ class MainActivity : Activity() {
         stop.deliveries.indices.forEach { add(checklistKey(stopIndex, "D", it)) }
         stop.pickups.indices.forEach { add(checklistKey(stopIndex, "P", it)) }
         stop.packing.indices.forEach { add(checklistKey(stopIndex, "K", it)) }
+    }
+
+    private fun showTradePurchaseDialog(plan: MobilePlan, trade: TradeRun) {
+        val scu = EditText(this).apply { inputType = android.text.InputType.TYPE_CLASS_NUMBER; setText(trade.scu.toString()); hint = "Actual SCU" }
+        val price = EditText(this).apply { inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL; setText(String.format(Locale.US, "%.2f", trade.buy)); hint = "Actual price / SCU" }
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(8), dp(24), 0); addView(scu); addView(price) }
+        val dialog = AlertDialog.Builder(this).setTitle("Confirm actual purchase")
+            .setMessage("Planned ${trade.scu} SCU at ${money(trade.buy)} aUEC/SCU. Enter what the terminal actually sold you.")
+            .setView(body).setNegativeButton("Cancel") { _, _ -> renderPlan(plan) }.setPositiveButton("Confirm", null).create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val amount = scu.text.toString().toIntOrNull()
+                val paid = price.text.toString().replace(',', '.').toDoubleOrNull()
+                if (amount == null || amount !in 1..trade.scu || paid == null || paid <= 0) {
+                    price.error = "Enter valid SCU and price"
+                } else {
+                    dialog.dismiss()
+                    syncTradeActual(plan, "FCT2|${plan.revision}|B|$amount|$paid", "Actual purchase")
+                }
+            }
+        }
+        dialog.show()
+    }
+
+    private fun showTradeSaleDialog(plan: MobilePlan, trade: TradeRun) {
+        if (trade.remainingScu <= 0 || trade.saleOptions.isEmpty()) { renderPlan(plan); return }
+        val buyer = Spinner(this).apply { adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, trade.saleOptions) }
+        val scu = EditText(this).apply { inputType = android.text.InputType.TYPE_CLASS_NUMBER; setText(trade.remainingScu.toString()); hint = "SCU sold now" }
+        val price = EditText(this).apply { inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL; setText(String.format(Locale.US, "%.2f", trade.saleOptions.first().price)); hint = "Actual price / SCU" }
+        buyer.setSelection(trade.saleOptions.indexOfFirst { it.name == trade.to.substringBefore(" —") }.coerceAtLeast(0))
+        buyer.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) { price.setText(String.format(Locale.US, "%.2f", trade.saleOptions[position].price)) }
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        }
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(8), dp(24), 0); addView(buyer); addView(scu); addView(price) }
+        val dialog = AlertDialog.Builder(this).setTitle("Record cargo sale")
+            .setMessage("${trade.remainingScu} SCU remain. Record this transaction; sell the rest here or at another suggested buyer later.")
+            .setView(body).setNegativeButton("Cancel") { _, _ -> renderPlan(plan) }.setPositiveButton("Record sale", null).create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val option = trade.saleOptions[buyer.selectedItemPosition]
+                val amount = scu.text.toString().toIntOrNull()
+                val received = price.text.toString().replace(',', '.').toDoubleOrNull()
+                if (amount == null || amount !in 1..trade.remainingScu || received == null || received <= 0) {
+                    price.error = "Enter valid SCU and price"
+                } else {
+                    dialog.dismiss()
+                    syncTradeActual(plan, "FCT2|${plan.revision}|S|${option.terminalId}|$amount|$received", "Cargo sale")
+                }
+            }
+        }
+        dialog.show()
+    }
+
+    private fun syncTradeActual(plan: MobilePlan, payload: String, label: String) {
+        val sessionId = vault.pairedDeviceId() ?: return
+        planSummary.text = "$label is being confirmed by Windows…".uppercase()
+        Thread {
+            runCatching { authorized { api, token -> api.sendChecklistUpdate(token, sessionId, label, payload) } }
+                .onFailure { error -> runOnUiThread { planSummary.text = "TRADE UPDATE NOT SYNCED // ${(error.message ?: "REQUEST FAILED").uppercase()}"; renderPlan(plan) } }
+        }.start()
     }
 
     private fun syncChecklistUpdate(plan: MobilePlan, stopIndex: Int, kind: String, itemIndex: Int, done: Boolean, label: String) {

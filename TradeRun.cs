@@ -10,6 +10,11 @@ public sealed record TradeStep(string Id, string Label, string ListLabel, int St
     public string Key => $"{Stop}|{Kind}|{Item}";
 }
 
+public sealed record TradeSaleOption(int TerminalId, string TerminalName, string StarSystem, string Detail, double Price)
+{
+    public string Place => StarSystem.Length > 0 ? $"{TerminalName} — {StarSystem}" : TerminalName;
+}
+
 // A "what can I haul from here" run sent to the tablet: what to buy where, where to sell it, and the steps of
 // flying it. The tablet ticks the steps; each tick's time is kept, and the finished run goes into the journal.
 public sealed class TradeRun
@@ -19,15 +24,21 @@ public sealed class TradeRun
     private const string Loading = "loaded";
 
     private readonly Dictionary<string, DateTime> _done = [];
+    private readonly List<TradeSale> _sales = [];
+    private int _boughtScu;
+    private double _actualBuyPrice;
 
     public TradeRun(string ship, UexTerminal origin, int destinationId, string destination, string destinationSystem, int commodityId, string commodity,
         int scu, double priceBuy, double priceSell, string crates, double? distance, string source, string confidence, DateTime startedUtc,
-        string destinationDetail = "")
+        string destinationDetail = "", IReadOnlyList<TradeSaleOption>? saleOptions = null)
     {
         (Ship, OriginId, Origin, OriginSystem, OriginDetail) = (ship, origin.Id, origin.Label, origin.StarSystemName ?? "", origin.FullName);
         (DestinationId, Destination, DestinationSystem, DestinationDetail) = (destinationId, destination, destinationSystem, destinationDetail);
         (CommodityId, Commodity, Scu, PriceBuy, PriceSell) = (commodityId, commodity, scu, priceBuy, priceSell);
         (Crates, Distance, Source, Confidence, StartedUtc) = (crates, distance, source, confidence, startedUtc);
+        SaleOptions = saleOptions is { Count: > 0 }
+            ? saleOptions
+            : [new TradeSaleOption(destinationId, destination, destinationSystem, destinationDetail, priceSell)];
 
         var steps = new List<TradeStep>
         {
@@ -71,19 +82,53 @@ public sealed class TradeRun
     // The clock starts when the run is sent to the tablet.
     public DateTime StartedUtc { get; }
     public IReadOnlyList<TradeStep> Steps { get; }
+    public IReadOnlyList<TradeSaleOption> SaleOptions { get; }
+    public IReadOnlyList<TradeSale> Sales => _sales;
     public IReadOnlyDictionary<string, DateTime> Done => _done;
     // The first relay revision that carried this run; ticks from before it belong to whatever the tablet showed then.
     public long FirstRevision { get; set; }
     // The journal row this run is written to, once the cargo is bought.
     public long TradeId { get; set; }
 
+    public int BoughtScu => _boughtScu > 0 ? _boughtScu : IsBought ? Scu : 0;
+    public double ActualBuyPrice => _actualBuyPrice > 0 ? _actualBuyPrice : PriceBuy;
+    public int SoldScu => _sales.Sum(x => x.Scu);
+    public int RemainingScu => Math.Max(0, BoughtScu - SoldScu);
+    public double RealizedRevenue => _sales.Sum(x => x.Revenue);
+    public double RealizedProfit => RealizedRevenue - SoldScu * ActualBuyPrice;
     public double Profit => TradeMath.GrossProfit(Scu, PriceBuy, PriceSell);
-    public bool IsCompleted => _done.ContainsKey(Sold);
+    public bool IsCompleted => BoughtScu > 0 && RemainingScu == 0 && _sales.Count > 0 && _done.ContainsKey(Sold);
     // When the cargo was on board: packed, or loaded when that box was left unticked.
     public DateTime? LoadedUtc => At(Packed) ?? At(Auto) ?? At(Warehouse);
     // Loaded or packed cargo was bought too, whether or not that box was ticked.
     public bool IsBought => _done.ContainsKey(Bought) || LoadedUtc is not null;
     public string Title => $"TRADE RUN // {Whole(Scu)} SCU {Commodity} // {Origin} → {Destination}";
+
+    public void RecordPurchase(int scu, double pricePerScu, DateTime utc)
+    {
+        if (scu <= 0 || scu > Scu) throw new InvalidOperationException($"The purchase must be between 1 and {Scu:N0} SCU.");
+        if (pricePerScu <= 0 || !double.IsFinite(pricePerScu)) throw new InvalidOperationException("The purchase price must be greater than zero.");
+        if (_sales.Count > 0) throw new InvalidOperationException("The purchase cannot be changed after a sale has been recorded.");
+        (_boughtScu, _actualBuyPrice) = (scu, pricePerScu);
+        _done[Bought] = utc.ToUniversalTime();
+    }
+
+    public TradeSale RecordSale(int terminalId, string terminalName, int scu, double pricePerScu, DateTime utc)
+    {
+        if (!IsBought) throw new InvalidOperationException("Confirm the actual purchase before recording a sale.");
+        if (terminalId <= 0 || string.IsNullOrWhiteSpace(terminalName)) throw new InvalidOperationException("Choose the terminal that bought the cargo.");
+        if (scu <= 0 || scu > RemainingScu) throw new InvalidOperationException($"The sale must be between 1 and {RemainingScu:N0} SCU.");
+        if (pricePerScu <= 0 || !double.IsFinite(pricePerScu)) throw new InvalidOperationException("The sale price must be greater than zero.");
+        var sale = new TradeSale
+        {
+            TerminalId = terminalId, TerminalName = terminalName.Trim(), Scu = scu,
+            PricePerScu = pricePerScu, SoldUtc = utc.ToUniversalTime()
+        };
+        _sales.Add(sale);
+        if (RemainingScu == 0) _done[Sold] = sale.SoldUtc;
+        else _done.Remove(Sold);
+        return sale;
+    }
 
     // The steps in flying order, with the two ways of loading counted as the one that was used.
     private IEnumerable<TradeStep> Milestones => Steps.Where(x => x.Alternative.Length == 0 || _done.ContainsKey(x.Id) ||
@@ -96,9 +141,16 @@ public sealed class TradeRun
         var changed = false;
         foreach (var step in targets)
         {
-            if (!done) changed |= _done.Remove(step.Id);
+            if (!done)
+            {
+                if (step.Id == Sold && _sales.Count > 0) { _sales.Clear(); changed = true; }
+                if (step.Id == Bought && _sales.Count == 0) { _boughtScu = 0; _actualBuyPrice = 0; }
+                changed |= _done.Remove(step.Id);
+            }
             else if (!_done.ContainsKey(step.Id))
             {
+                if (step.Id == Bought) RecordPurchase(Scu, PriceBuy, utc);
+                else if (step.Id == Sold) RecordSale(DestinationId, Destination, Math.Max(1, RemainingScu), PriceSell, utc);
                 // Cargo is loaded one way or the other, not both.
                 foreach (var other in Steps.Where(x => x.Alternative.Length > 0 && x.Alternative == step.Alternative && x.Id != step.Id)) _done.Remove(other.Id);
                 _done[step.Id] = utc;
@@ -132,19 +184,44 @@ public sealed class TradeRun
     // The journal's three stretches: until the cargo is on board, until the ship is docked again, until the cargo is sold.
     public (int? Loading, int? Travel, int? Unloading) Stretches() => (Between(StartedUtc, LoadedUtc), Between(LoadedUtc, At(Docked)), Between(At(Docked), At(Sold)));
 
-    // Writes the run into a journal row. Prices are set once, so a correction made in the journal is not undone by the next tick.
+    // Writes the actual purchase and every sale leg into a journal row. Existing sale IDs and UEX states
+    // are retained when the synchronized run is saved again after another checklist tick.
     public void Fill(TradeRecord record)
     {
         if (record.Id == 0)
         {
             (record.Ship, record.OriginId, record.OriginName) = (Ship, OriginId, Origin);
             (record.DestinationId, record.DestinationName) = (DestinationId, Destination);
-            (record.CommodityId, record.CommodityName, record.Scu, record.PriceBuy) = (CommodityId, Commodity, Scu, PriceBuy);
+            (record.CommodityId, record.CommodityName) = (CommodityId, Commodity);
+            (record.PlannedScu, record.PlannedPriceBuy, record.PlannedPriceSell) = (Scu, PriceBuy, PriceSell);
+            (record.Scu, record.PriceBuy) = (BoughtScu, ActualBuyPrice);
             record.BoughtUtc = At(Bought) ?? StartedUtc;
-            record.Notes = $"Flown with the tablet checklist. The prices are the planned ones ({Source}); correct them if you paid or received something else.";
+            record.Notes = $"Flown with the synchronized trade monitor; planned from {Source}, with actual terminal amounts recorded separately.";
         }
-        if (!IsCompleted) (record.PriceSell, record.SoldUtc) = (null, null);
-        else (record.PriceSell, record.SoldUtc) = (record.PriceSell ?? PriceSell, At(Sold));
+
+        var previousSales = record.Sales.ToList();
+        record.Sales = _sales.Select(sale =>
+        {
+            var previous = previousSales.FirstOrDefault(x => x.TerminalId == sale.TerminalId && x.Scu == sale.Scu &&
+                Math.Abs(x.PricePerScu - sale.PricePerScu) < 0.0001 && x.SoldUtc == sale.SoldUtc);
+            return new TradeSale
+            {
+                Id = previous?.Id ?? sale.Id, TradeId = record.Id, TerminalId = sale.TerminalId, TerminalName = sale.TerminalName,
+                Scu = sale.Scu, PricePerScu = sale.PricePerScu, SoldUtc = sale.SoldUtc,
+                UexId = previous?.UexId ?? sale.UexId, UexSubmission = previous?.UexSubmission ?? sale.UexSubmission,
+                UexDetail = previous?.UexDetail ?? sale.UexDetail
+            };
+        }).ToList();
+        record.PriceSell = null;
+        record.SoldUtc = null;
+        if (record.Sales.Count > 0)
+        {
+            var soldScu = record.Sales.Sum(x => x.Scu);
+            record.PriceSell = record.Sales.Sum(x => x.Revenue) / soldScu;
+            var lastSale = record.Sales.OrderBy(x => x.SoldUtc).Last();
+            (record.DestinationId, record.DestinationName) = (lastSale.TerminalId, lastSale.TerminalName);
+            if (soldScu >= record.Scu) record.SoldUtc = lastSale.SoldUtc;
+        }
         (record.LoadingSeconds, record.TravelSeconds, record.UnloadingSeconds) = Stretches();
         record.StepTimes = JsonSerializer.Serialize(Timeline().Select(x => new StepTime(x.Step.Label, x.Utc, x.Seconds)));
     }
@@ -158,8 +235,11 @@ public sealed class TradeRun
             trade = 1,
             run = StartedUtc.Ticks.ToString(CultureInfo.InvariantCulture),
             ship = Ship, commodity = Commodity, scu = Scu, crates = Crates, buy = PriceBuy, sell = PriceSell,
+            boughtScu = BoughtScu, actualBuy = IsBought ? ActualBuyPrice : (double?)null, soldScu = SoldScu,
+            remainingScu = RemainingScu, realizedRevenue = RealizedRevenue,
             from = Place(Origin, OriginSystem), to = Place(Destination, DestinationSystem), fromDetail = OriginDetail, toDetail = DestinationDetail,
             distance = Distance, source = Source, confidence = Confidence,
+            saleOptions = SaleOptions.Select(x => new { terminalId = x.TerminalId, name = x.TerminalName, place = x.Place, detail = x.Detail, price = x.Price }),
             steps = Steps.Select(x => new { id = x.Id, key = x.Key, label = x.Label, alt = x.Alternative })
         });
         var underway = _done.ContainsKey(Undocked);
@@ -178,10 +258,15 @@ public sealed class TradeRun
         var steps = Milestones.ToList();
         var last = Timeline().LastOrDefault();
         var progress = $"{steps.Count(x => _done.ContainsKey(x.Id))} of {steps.Count} steps";
-        if (!IsCompleted) return last.Step is null ? $"Trade run on the tablet: {progress}" : $"Trade run: {last.Step.Label.ToLowerInvariant()} at {last.Utc.ToLocalTime():HH:mm:ss} — {progress}";
+        if (!IsCompleted)
+        {
+            var cargo = SoldScu > 0 ? $" — {SoldScu:N0} sold, {RemainingScu:N0} SCU remaining" : "";
+            return (last.Step is null ? $"Trade run on the tablet: {progress}" : $"Trade run: {last.Step.Label.ToLowerInvariant()} at {last.Utc.ToLocalTime():HH:mm:ss} — {progress}") + cargo;
+        }
         var seconds = TotalSeconds ?? 0;
-        return $"Trade run finished in {TradeUi.Duration(seconds)}: {Profit:N0} aUEC planned profit" +
-               (TradeMath.ProfitPerHour(Profit, seconds) is { } rate ? $", {rate:N0} aUEC/h" : "") + ". It is in the trading journal.";
+        var actualProfit = RealizedRevenue - BoughtScu * ActualBuyPrice;
+        return $"Trade run finished in {TradeUi.Duration(seconds)}: {actualProfit:N0} aUEC actual gross profit" +
+               (TradeMath.ProfitPerHour(actualProfit, seconds) is { } rate ? $", {rate:N0} aUEC/h" : "") + ". It is in the trading journal.";
     }
 
     private static string Place(string name, string system) => system.Length > 0 ? $"{name} — {system}" : name;

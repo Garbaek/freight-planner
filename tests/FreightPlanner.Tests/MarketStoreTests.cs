@@ -172,6 +172,39 @@ public sealed class MarketStoreTests : IDisposable
     }
 
     [Fact]
+    public void A_cargo_lot_keeps_partial_sales_and_completes_on_the_last_sale()
+    {
+        var store = new MarketStore(_directory);
+        var trade = new TradeRecord
+        {
+            Ship = "C2 Hercules", OriginId = 10, OriginName = "Buy", DestinationId = 20, DestinationName = "Planned buyer",
+            CommodityId = 33, CommodityName = "Gold", PlannedScu = 100, PlannedPriceBuy = 100, PlannedPriceSell = 150,
+            Scu = 80, PriceBuy = 110, BoughtUtc = new DateTime(2026, 10, 13, 10, 0, 0, DateTimeKind.Utc)
+        };
+        store.Save(trade);
+
+        var first = store.AddSale(trade.Id, 20, "Planned buyer", 30, 145, new DateTime(2026, 10, 13, 11, 0, 0, DateTimeKind.Utc));
+        var partial = Assert.Single(store.Trades());
+        Assert.True(partial.IsPartiallySold);
+        Assert.Equal(30, partial.SoldScu);
+        Assert.Equal(50, partial.RemainingScu);
+        Assert.Null(partial.SoldUtc);
+
+        store.SetSaleSubmission(first.Id, SubmissionState.Submitted, "UEX trade 901", 901);
+        store.AddSale(trade.Id, 21, "Alternate buyer", 50, 140, new DateTime(2026, 10, 13, 11, 30, 0, DateTimeKind.Utc));
+        var completed = Assert.Single(store.Trades());
+        Assert.True(completed.IsCompleted);
+        Assert.Equal(2, completed.Sales.Count);
+        Assert.Equal(80, completed.SoldScu);
+        Assert.Equal(0, completed.RemainingScu);
+        Assert.Equal((30 * 145d + 50 * 140d) / 80d, completed.PriceSell);
+        Assert.Equal(901, completed.Sales[0].UexId);
+
+        store.Save(completed);
+        Assert.Equal(completed.Sales.Select(x => x.Id), Assert.Single(store.Trades()).Sales.Select(x => x.Id));
+    }
+
+    [Fact]
     public void A_screenshot_is_remembered_until_the_file_changes()
     {
         var store = new MarketStore(_directory);
@@ -192,7 +225,7 @@ public sealed class MarketStoreTests : IDisposable
     public void The_schema_version_is_recorded_and_a_newer_database_is_refused()
     {
         var store = new MarketStore(_directory);
-        Assert.Equal(4L, Pragma(store.PathOnDisk, "PRAGMA user_version"));
+        Assert.Equal(5L, Pragma(store.PathOnDisk, "PRAGMA user_version"));
 
         Pragma(store.PathOnDisk, "PRAGMA user_version = 99");
         Assert.Throws<InvalidOperationException>(() => new MarketStore(_directory));
@@ -220,11 +253,15 @@ public sealed class MarketStoreTests : IDisposable
         Pragma(store.PathOnDisk, "ALTER TABLE trades DROP COLUMN tracker_id");
         Pragma(store.PathOnDisk, "ALTER TABLE trades DROP COLUMN tracker_submission");
         Pragma(store.PathOnDisk, "ALTER TABLE trades DROP COLUMN tracker_detail");
+        Pragma(store.PathOnDisk, "ALTER TABLE trades DROP COLUMN planned_scu");
+        Pragma(store.PathOnDisk, "ALTER TABLE trades DROP COLUMN planned_price_buy");
+        Pragma(store.PathOnDisk, "ALTER TABLE trades DROP COLUMN planned_price_sell");
+        Pragma(store.PathOnDisk, "DROP TABLE trade_sales");
         Pragma(store.PathOnDisk, "PRAGMA user_version = 1");
 
         var upgraded = new MarketStore(_directory);
 
-        Assert.Equal(4L, Pragma(upgraded.PathOnDisk, "PRAGMA user_version"));
+        Assert.Equal(5L, Pragma(upgraded.PathOnDisk, "PRAGMA user_version"));
         var read = Assert.Single(upgraded.Trades());
         Assert.Equal("", read.StepTimes);
         Assert.Equal(34_650, read.PriceSell);

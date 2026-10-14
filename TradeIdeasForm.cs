@@ -154,10 +154,21 @@ public sealed class TradeIdeasForm : Form
         if (SelectedIdea is not { } idea || _origin is not { } origin) return;
         var route = idea.Route;
         var destination = _terminals.FirstOrDefault(x => x.Id == route.IdTerminalDestination);
+        var alternatives = _terminals
+            .Select(x => new { Terminal = x, Quote = _context.UexQuote(x.Id, route.IdCommodity, buy: false) })
+            .Where(x => x.Quote is not null)
+            .OrderByDescending(x => x.Terminal.Id == route.IdTerminalDestination)
+            .ThenByDescending(x => x.Quote!.Price)
+            .Take(12)
+            .Select(x => new TradeSaleOption(x.Terminal.Id, x.Terminal.Label, x.Terminal.StarSystemName ?? "", x.Terminal.FullName, x.Quote!.Price))
+            .ToList();
+        if (alternatives.All(x => x.TerminalId != route.IdTerminalDestination))
+            alternatives.Insert(0, new TradeSaleOption(route.IdTerminalDestination, destination?.Label ?? route.DestinationTerminalName ?? "Unknown",
+                destination?.StarSystemName ?? route.DestinationStarSystemName ?? "", destination?.FullName ?? "", idea.Sell.Price));
         var run = new TradeRun(_ship.Name, origin, route.IdTerminalDestination, destination?.Label ?? route.DestinationTerminalName ?? "Unknown",
             destination?.StarSystemName ?? route.DestinationStarSystemName ?? "", route.IdCommodity, route.CommodityName ?? "Unknown",
             idea.Load.Scu, idea.Buy.Price, idea.Sell.Price, idea.Load.Crates, route.Distance, SourceOf(idea),
-            PriceSelector.Rate(idea.Buy, idea.Sell, DateTime.UtcNow).ToString(), DateTime.UtcNow, destination?.FullName ?? "");
+            PriceSelector.Rate(idea.Buy, idea.Sell, DateTime.UtcNow).ToString(), DateTime.UtcNow, destination?.FullName ?? "", alternatives);
         _sendTablet.Enabled = false;
         _status.Text = "Starting the run monitor…";
         try { _status.Text = await _context.Host.SendRunToTablet(run); }

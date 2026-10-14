@@ -2,8 +2,10 @@
 
 ## Unreleased
 
-- Windows now has the same live trade-run monitor as Android, with bidirectional checkpoint times. Ticking **Bought commodities** starts the local journal row and **Sold** completes it.
-- Optional personal UEX trade-history sync adds those two checked transactions to the pilot's UEX account and remembers the returned IDs so repeated commands do not duplicate them.
+- Windows and Android now ask for the actual SCU and unit price at purchase instead of silently treating the route estimate as fact. The plan and the real cargo lot are kept separately.
+- **Record sale** can be used repeatedly: a terminal may buy only part of the cargo, the remaining SCU stays visible, and the next transaction can use the planned buyer or another UEX-priced buyer. The run completes only when all bought SCU are accounted for.
+- Optional personal UEX trade-history sync adds the actual purchase and every actual sale transaction separately, retaining each returned UEX ID so retries do not duplicate a transaction.
+- The trading journal stores sale legs, shows partial cargo lots and calculates completed revenue from the exact transactions. Existing completed rows migrate to a single sale leg automatically.
 - A separate opt-in community tracker sends completed runs to the Docker-hosted account server. The website shows total sales volume, SCU, completed runs, participating pilots and a top-ten leaderboard; retries are idempotent and opting out hides earlier contributions from public totals.
 - The website now has ALTCHA-protected account creation followed by email verification. Windows and Android open that page for new accounts, while sign-in remains in the apps.
 - Both apps have an off-by-default anonymous launch counter. The server keeps daily platform/version totals only, with no installation or account identifier and no per-launch event rows.

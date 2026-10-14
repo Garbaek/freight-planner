@@ -269,6 +269,33 @@ public class TradeRunTests
     }
 
     [Fact]
+    public void Actual_purchase_and_partial_sales_replace_the_plan_without_losing_remaining_cargo()
+    {
+        var run = Run();
+        run.RecordPurchase(20, 28_200, After(1));
+        run.RecordSale(778, "Levski", 8, 34_000, After(20));
+
+        Assert.Equal(20, run.BoughtScu);
+        Assert.Equal(8, run.SoldScu);
+        Assert.Equal(12, run.RemainingScu);
+        Assert.False(run.IsCompleted);
+        Assert.DoesNotContain(TradeRun.Sold, run.Done.Keys);
+        Assert.Contains("12 SCU remaining", run.Describe());
+
+        run.RecordSale(779, "Alternate buyer", 12, 33_500, After(25));
+        Assert.True(run.IsCompleted);
+        Assert.Equal(2, run.Sales.Count);
+
+        var record = new TradeRecord();
+        run.Fill(record);
+        Assert.Equal(24, record.PlannedScu);
+        Assert.Equal(20, record.Scu);
+        Assert.Equal(28_200, record.PriceBuy);
+        Assert.Equal(2, record.Sales.Count);
+        Assert.Equal(20, record.Sales.Sum(x => x.Scu));
+    }
+
+    [Fact]
     public void The_stop_marker_moves_on_once_undocked()
     {
         var run = Run();

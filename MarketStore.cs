@@ -75,6 +75,29 @@ public sealed class MarketStore
         ALTER TABLE trades ADD COLUMN tracker_id TEXT NOT NULL DEFAULT '';
         ALTER TABLE trades ADD COLUMN tracker_submission TEXT NOT NULL DEFAULT 'NotSubmitted';
         ALTER TABLE trades ADD COLUMN tracker_detail TEXT NOT NULL DEFAULT '';
+        """,
+        // Actual cargo and partial sales. Older completed rows become one sale at their recorded destination.
+        """
+        ALTER TABLE trades ADD COLUMN planned_scu INTEGER;
+        ALTER TABLE trades ADD COLUMN planned_price_buy REAL;
+        ALTER TABLE trades ADD COLUMN planned_price_sell REAL;
+        CREATE TABLE trade_sales (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trade_id INTEGER NOT NULL,
+            terminal_id INTEGER NOT NULL,
+            terminal_name TEXT NOT NULL,
+            scu INTEGER NOT NULL,
+            price_per_scu REAL NOT NULL,
+            sold_utc TEXT NOT NULL,
+            uex_id INTEGER,
+            uex_submission TEXT NOT NULL DEFAULT 'NotSubmitted',
+            uex_detail TEXT NOT NULL DEFAULT '',
+            FOREIGN KEY(trade_id) REFERENCES trades(id) ON DELETE CASCADE);
+        CREATE INDEX ix_trade_sales_trade ON trade_sales (trade_id, sold_utc, id);
+        UPDATE trades SET planned_scu = scu, planned_price_buy = price_buy, planned_price_sell = price_sell;
+        INSERT INTO trade_sales (trade_id, terminal_id, terminal_name, scu, price_per_scu, sold_utc, uex_id, uex_submission, uex_detail)
+            SELECT id, destination_id, destination_name, scu, price_sell, sold_utc, uex_sell_id, uex_sell_submission, uex_sell_detail
+            FROM trades WHERE price_sell IS NOT NULL AND price_sell > 0 AND sold_utc IS NOT NULL;
         """
     ];
 
@@ -85,7 +108,7 @@ public sealed class MarketStore
         "id, ship, origin_id, origin_name, destination_id, destination_name, commodity_id, commodity_name, scu, price_buy, price_sell, " +
         "loading_seconds, travel_seconds, unloading_seconds, operating_costs, bought_utc, sold_utc, notes, step_times, " +
         "uex_buy_id, uex_sell_id, uex_buy_submission, uex_sell_submission, uex_buy_detail, uex_sell_detail, " +
-        "tracker_id, tracker_submission, tracker_detail";
+        "tracker_id, tracker_submission, tracker_detail, planned_scu, planned_price_buy, planned_price_sell";
 
     private readonly string _connection;
 
@@ -177,7 +200,9 @@ public sealed class MarketStore
     public void Save(TradeRecord trade)
     {
         using var db = Open();
+        using var transaction = db.BeginTransaction();
         if (trade.TrackerId.Length == 0) trade.TrackerId = Guid.NewGuid().ToString("D");
+        Normalize(trade);
         var values = new (string, object?)[]
         {
             ("$id", trade.Id), ("$ship", trade.Ship), ("$origin", trade.OriginId), ("$originName", trade.OriginName), ("$destination", trade.DestinationId),
@@ -188,43 +213,104 @@ public sealed class MarketStore
             ("$uexBuyId", trade.UexBuyId), ("$uexSellId", trade.UexSellId),
             ("$uexBuySubmission", trade.UexBuySubmission.ToString()), ("$uexSellSubmission", trade.UexSellSubmission.ToString()),
             ("$uexBuyDetail", trade.UexBuyDetail), ("$uexSellDetail", trade.UexSellDetail), ("$trackerId", trade.TrackerId),
-            ("$trackerSubmission", trade.TrackerSubmission.ToString()), ("$trackerDetail", trade.TrackerDetail)
+            ("$trackerSubmission", trade.TrackerSubmission.ToString()), ("$trackerDetail", trade.TrackerDetail),
+            ("$plannedScu", trade.PlannedScu), ("$plannedBuy", trade.PlannedPriceBuy), ("$plannedSell", trade.PlannedPriceSell)
         };
         if (trade.Id > 0)
-            Command(db, null,
+            Command(db, transaction,
                 "UPDATE trades SET ship = $ship, origin_id = $origin, origin_name = $originName, destination_id = $destination, destination_name = $destinationName, " +
                 "commodity_id = $commodity, commodity_name = $commodityName, scu = $scu, price_buy = $buy, price_sell = $sell, loading_seconds = $loading, " +
                 "travel_seconds = $travel, unloading_seconds = $unloading, operating_costs = $costs, bought_utc = $bought, sold_utc = $sold, notes = $notes, step_times = $steps, " +
                 "uex_buy_id = $uexBuyId, uex_sell_id = $uexSellId, uex_buy_submission = $uexBuySubmission, uex_sell_submission = $uexSellSubmission, " +
                 "uex_buy_detail = $uexBuyDetail, uex_sell_detail = $uexSellDetail, tracker_id = $trackerId, " +
-                "tracker_submission = $trackerSubmission, tracker_detail = $trackerDetail WHERE id = $id",
+                "tracker_submission = $trackerSubmission, tracker_detail = $trackerDetail, planned_scu = $plannedScu, " +
+                "planned_price_buy = $plannedBuy, planned_price_sell = $plannedSell WHERE id = $id",
                 values).ExecuteNonQuery();
         else
-            trade.Id = Convert.ToInt64(Command(db, null,
+            trade.Id = Convert.ToInt64(Command(db, transaction,
                 $"INSERT INTO trades ({TradeColumns[4..]}) VALUES ($ship, $origin, $originName, $destination, $destinationName, $commodity, $commodityName, $scu, $buy, $sell, " +
                 "$loading, $travel, $unloading, $costs, $bought, $sold, $notes, $steps, $uexBuyId, $uexSellId, $uexBuySubmission, $uexSellSubmission, " +
-                "$uexBuyDetail, $uexSellDetail, $trackerId, $trackerSubmission, $trackerDetail); SELECT last_insert_rowid()", values).ExecuteScalar());
+                "$uexBuyDetail, $uexSellDetail, $trackerId, $trackerSubmission, $trackerDetail, $plannedScu, $plannedBuy, $plannedSell); SELECT last_insert_rowid()", values).ExecuteScalar());
+
+        // Keep sale IDs stable: UEX uses each ID as an independent retry/checkpoint key. The in-memory
+        // list is still authoritative, so rows removed by an editor are deleted inside this transaction.
+        var existingSaleIds = new List<long>();
+        using (var reader = Command(db, transaction, "SELECT id FROM trade_sales WHERE trade_id = $id", ("$id", trade.Id)).ExecuteReader())
+            while (reader.Read()) existingSaleIds.Add(reader.GetInt64(0));
+        var retainedSaleIds = trade.Sales.Where(x => x.Id > 0).Select(x => x.Id).ToHashSet();
+        foreach (var removedId in existingSaleIds.Where(x => !retainedSaleIds.Contains(x)))
+            Command(db, transaction, "DELETE FROM trade_sales WHERE id = $id AND trade_id = $trade", ("$id", removedId), ("$trade", trade.Id)).ExecuteNonQuery();
+        foreach (var sale in trade.Sales.OrderBy(x => x.SoldUtc).ThenBy(x => x.Id))
+        {
+            sale.TradeId = trade.Id;
+            var saleValues = new (string, object?)[]
+            {
+                ("$id", sale.Id), ("$trade", trade.Id), ("$terminal", sale.TerminalId), ("$name", sale.TerminalName),
+                ("$scu", sale.Scu), ("$price", sale.PricePerScu), ("$sold", Text(sale.SoldUtc)), ("$uexId", sale.UexId),
+                ("$submission", sale.UexSubmission.ToString()), ("$detail", sale.UexDetail)
+            };
+            var updated = sale.Id > 0
+                ? Command(db, transaction,
+                    "UPDATE trade_sales SET terminal_id = $terminal, terminal_name = $name, scu = $scu, price_per_scu = $price, " +
+                    "sold_utc = $sold, uex_id = $uexId, uex_submission = $submission, uex_detail = $detail WHERE id = $id AND trade_id = $trade",
+                    saleValues).ExecuteNonQuery()
+                : 0;
+            if (updated == 0)
+                sale.Id = Convert.ToInt64(Command(db, transaction,
+                    "INSERT INTO trade_sales (trade_id, terminal_id, terminal_name, scu, price_per_scu, sold_utc, uex_id, uex_submission, uex_detail) " +
+                    "VALUES ($trade, $terminal, $name, $scu, $price, $sold, $uexId, $submission, $detail); SELECT last_insert_rowid()",
+                    saleValues).ExecuteScalar());
+        }
+        transaction.Commit();
     }
 
     public List<TradeRecord> Trades()
     {
         using var db = Open();
-        using var reader = Command(db, null, $"SELECT {TradeColumns} FROM trades ORDER BY bought_utc DESC, id DESC").ExecuteReader();
         var rows = new List<TradeRecord>();
-        while (reader.Read())
-            rows.Add(new TradeRecord
+        using (var reader = Command(db, null, $"SELECT {TradeColumns} FROM trades ORDER BY bought_utc DESC, id DESC").ExecuteReader())
+            while (reader.Read())
+                rows.Add(new TradeRecord
+                {
+                    Id = reader.GetInt64(0), Ship = reader.GetString(1), OriginId = reader.GetInt32(2), OriginName = reader.GetString(3),
+                    DestinationId = reader.GetInt32(4), DestinationName = reader.GetString(5), CommodityId = reader.GetInt32(6), CommodityName = reader.GetString(7),
+                    Scu = reader.GetInt32(8), PriceBuy = reader.GetDouble(9), PriceSell = Number(reader, 10), LoadingSeconds = Whole(reader, 11),
+                    TravelSeconds = Whole(reader, 12), UnloadingSeconds = Whole(reader, 13), OperatingCosts = Number(reader, 14),
+                    BoughtUtc = Time(reader.GetString(15)), SoldUtc = reader.IsDBNull(16) ? null : Time(reader.GetString(16)), Notes = reader.GetString(17),
+                    StepTimes = reader.GetString(18), UexBuyId = reader.IsDBNull(19) ? null : reader.GetInt64(19),
+                    UexSellId = reader.IsDBNull(20) ? null : reader.GetInt64(20), UexBuySubmission = Enum.Parse<SubmissionState>(reader.GetString(21)),
+                    UexSellSubmission = Enum.Parse<SubmissionState>(reader.GetString(22)), UexBuyDetail = reader.GetString(23), UexSellDetail = reader.GetString(24),
+                    TrackerId = reader.GetString(25), TrackerSubmission = Enum.Parse<SubmissionState>(reader.GetString(26)), TrackerDetail = reader.GetString(27),
+                    PlannedScu = Whole(reader, 28) ?? reader.GetInt32(8), PlannedPriceBuy = Number(reader, 29), PlannedPriceSell = Number(reader, 30)
+                });
+        var byId = rows.ToDictionary(x => x.Id);
+        using var sales = Command(db, null,
+            "SELECT id, trade_id, terminal_id, terminal_name, scu, price_per_scu, sold_utc, uex_id, uex_submission, uex_detail " +
+            "FROM trade_sales ORDER BY sold_utc, id").ExecuteReader();
+        while (sales.Read() && byId.TryGetValue(sales.GetInt64(1), out var trade))
+            trade.Sales.Add(new TradeSale
             {
-                Id = reader.GetInt64(0), Ship = reader.GetString(1), OriginId = reader.GetInt32(2), OriginName = reader.GetString(3),
-                DestinationId = reader.GetInt32(4), DestinationName = reader.GetString(5), CommodityId = reader.GetInt32(6), CommodityName = reader.GetString(7),
-                Scu = reader.GetInt32(8), PriceBuy = reader.GetDouble(9), PriceSell = Number(reader, 10), LoadingSeconds = Whole(reader, 11),
-                TravelSeconds = Whole(reader, 12), UnloadingSeconds = Whole(reader, 13), OperatingCosts = Number(reader, 14),
-                BoughtUtc = Time(reader.GetString(15)), SoldUtc = reader.IsDBNull(16) ? null : Time(reader.GetString(16)), Notes = reader.GetString(17),
-                StepTimes = reader.GetString(18), UexBuyId = reader.IsDBNull(19) ? null : reader.GetInt64(19),
-                UexSellId = reader.IsDBNull(20) ? null : reader.GetInt64(20), UexBuySubmission = Enum.Parse<SubmissionState>(reader.GetString(21)),
-                UexSellSubmission = Enum.Parse<SubmissionState>(reader.GetString(22)), UexBuyDetail = reader.GetString(23), UexSellDetail = reader.GetString(24),
-                TrackerId = reader.GetString(25), TrackerSubmission = Enum.Parse<SubmissionState>(reader.GetString(26)), TrackerDetail = reader.GetString(27)
+                Id = sales.GetInt64(0), TradeId = sales.GetInt64(1), TerminalId = sales.GetInt32(2), TerminalName = sales.GetString(3),
+                Scu = sales.GetInt32(4), PricePerScu = sales.GetDouble(5), SoldUtc = Time(sales.GetString(6)),
+                UexId = sales.IsDBNull(7) ? null : sales.GetInt64(7), UexSubmission = Enum.Parse<SubmissionState>(sales.GetString(8)),
+                UexDetail = sales.GetString(9)
             });
         return rows;
+    }
+
+    public TradeSale AddSale(long tradeId, int terminalId, string terminalName, int scu, double pricePerScu, DateTime soldUtc)
+    {
+        var trade = Trades().FirstOrDefault(x => x.Id == tradeId) ?? throw new InvalidOperationException("The journal run no longer exists.");
+        if (scu <= 0 || scu > trade.RemainingScu) throw new InvalidOperationException($"The sale must be between 1 and {trade.RemainingScu:N0} SCU.");
+        if (pricePerScu <= 0 || !double.IsFinite(pricePerScu)) throw new InvalidOperationException("The sale price must be greater than zero.");
+        var sale = new TradeSale
+        {
+            TradeId = tradeId, TerminalId = terminalId, TerminalName = terminalName.Trim(), Scu = scu,
+            PricePerScu = pricePerScu, SoldUtc = soldUtc.ToUniversalTime()
+        };
+        trade.Sales.Add(sale);
+        Save(trade);
+        return sale;
     }
 
     public void SetTradeSubmission(long tradeId, bool buy, SubmissionState state, string detail, long? uexTradeId)
@@ -234,6 +320,14 @@ public sealed class MarketStore
         Command(db, null,
             $"UPDATE trades SET uex_{side}_submission = $state, uex_{side}_detail = $detail, uex_{side}_id = COALESCE($uexId, uex_{side}_id) WHERE id = $id",
             ("$state", state.ToString()), ("$detail", detail), ("$uexId", uexTradeId), ("$id", tradeId)).ExecuteNonQuery();
+    }
+
+    public void SetSaleSubmission(long saleId, SubmissionState state, string detail, long? uexTradeId)
+    {
+        using var db = Open();
+        Command(db, null,
+            "UPDATE trade_sales SET uex_submission = $state, uex_detail = $detail, uex_id = COALESCE($uexId, uex_id) WHERE id = $id",
+            ("$state", state.ToString()), ("$detail", detail), ("$uexId", uexTradeId), ("$id", saleId)).ExecuteNonQuery();
     }
 
     public void SetTrackerSubmission(long tradeId, SubmissionState state, string detail)
@@ -246,6 +340,7 @@ public sealed class MarketStore
     public void DeleteTrade(long id)
     {
         using var db = Open();
+        Command(db, null, "DELETE FROM trade_sales WHERE trade_id = $id", ("$id", id)).ExecuteNonQuery();
         Command(db, null, "DELETE FROM trades WHERE id = $id", ("$id", id)).ExecuteNonQuery();
     }
 
@@ -293,6 +388,38 @@ public sealed class MarketStore
         // intermediate build that created the columns before this backfill was added.
         if (Migrations.Length >= 4)
             Command(db, null, "UPDATE trades SET tracker_id = lower(hex(randomblob(16))) WHERE tracker_id = ''").ExecuteNonQuery();
+    }
+
+    private static void Normalize(TradeRecord trade)
+    {
+        if (trade.PlannedScu <= 0) trade.PlannedScu = trade.Scu;
+        trade.PlannedPriceBuy ??= trade.PriceBuy > 0 ? trade.PriceBuy : null;
+        trade.PlannedPriceSell ??= trade.PriceSell;
+        if (trade.Sales.Count == 0 && trade.PriceSell is > 0 && trade.SoldUtc is { } sold)
+            trade.Sales.Add(new TradeSale
+            {
+                TerminalId = trade.DestinationId, TerminalName = trade.DestinationName, Scu = trade.Scu,
+                PricePerScu = trade.PriceSell.Value, SoldUtc = sold, UexId = trade.UexSellId,
+                UexSubmission = trade.UexSellSubmission, UexDetail = trade.UexSellDetail
+            });
+        if (trade.Sales.Count == 0) return;
+        if (trade.Sales.Any(x => x.Scu <= 0 || x.PricePerScu <= 0 || !double.IsFinite(x.PricePerScu)))
+            throw new InvalidOperationException("Every sale must have positive SCU and a finite price greater than zero.");
+        var soldScu = trade.Sales.Sum(x => x.Scu);
+        if (soldScu > trade.Scu)
+            throw new InvalidOperationException($"Sale rows account for {soldScu:N0} SCU, more than the {trade.Scu:N0} SCU bought.");
+        trade.PriceSell = soldScu > 0 ? trade.Sales.Sum(x => x.Revenue) / soldScu : null;
+        var last = trade.Sales.OrderBy(x => x.SoldUtc).ThenBy(x => x.Id).Last();
+        trade.DestinationId = last.TerminalId;
+        trade.DestinationName = last.TerminalName;
+        trade.SoldUtc = soldScu >= trade.Scu ? last.SoldUtc : null;
+        // These legacy fields summarize only a one-sale run. Multi-sale UEX state lives on each sale row.
+        if (trade.Sales.Count == 1)
+        {
+            trade.UexSellId = last.UexId;
+            trade.UexSellSubmission = last.UexSubmission;
+            trade.UexSellDetail = last.UexDetail;
+        }
     }
 
     private SqliteConnection Open()

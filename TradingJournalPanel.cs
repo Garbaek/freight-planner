@@ -107,7 +107,8 @@ public sealed class TradingJournalPanel : UserControl
             var index = _grid.Rows.Add(TradeUi.When(trade.BoughtUtc), trade.Ship, trade.CommodityName,
                 trade.DestinationName.Length > 0 ? trade.Route : $"{trade.OriginName} → not sold yet", (double)trade.Scu, trade.PriceBuy, trade.PriceSell,
                 investment, trade.OperatingCosts, TradeMath.Gross(trade), net, net is null ? null : TradeMath.Roi(net.Value, investment),
-                TradeUi.Duration(seconds), net is null ? null : TradeMath.ProfitPerHour(net.Value, seconds), trade.IsCompleted ? "Sold" : "Open", UexState(trade), TrackerState(trade));
+                TradeUi.Duration(seconds), net is null ? null : TradeMath.ProfitPerHour(net.Value, seconds),
+                trade.IsCompleted ? "Sold" : trade.IsPartiallySold ? $"Partial {trade.SoldScu:N0}/{trade.Scu:N0}" : "Open", UexState(trade), TrackerState(trade));
             _grid.Rows[index].Tag = trade;
             _grid.Rows[index].Cells[TimeColumn].ToolTipText = Steps(trade);
             // An open run has cost money and earned nothing yet.
@@ -139,8 +140,11 @@ public sealed class TradingJournalPanel : UserControl
             SubmissionState.Failed => $"{name} failed" + (detail.Length > 0 ? $": {detail}" : ""),
             _ => $"{name} —"
         };
-        return Side("Buy", trade.UexBuySubmission, trade.UexBuyId, trade.UexBuyDetail) + "  ·  " +
-               Side("Sell", trade.UexSellSubmission, trade.UexSellId, trade.UexSellDetail);
+        var sales = trade.Sales.Count == 0
+            ? Side("Sell", trade.UexSellSubmission, trade.UexSellId, trade.UexSellDetail)
+            : $"Sales {trade.Sales.Count(x => x.UexSubmission == SubmissionState.Submitted)}/{trade.Sales.Count} ✓" +
+              (trade.Sales.Any(x => x.UexSubmission == SubmissionState.Failed) ? " (retry needed)" : "");
+        return Side("Buy", trade.UexBuySubmission, trade.UexBuyId, trade.UexBuyDetail) + "  ·  " + sales;
     }
 
     private static string TrackerState(TradeRecord trade) => trade.TrackerSubmission switch
@@ -246,6 +250,11 @@ public sealed class TradeEditorForm : Form
         _travel.Text = TradeUi.Duration(trade.TravelSeconds);
         _unloading.Text = TradeUi.Duration(trade.UnloadingSeconds);
         _notes.Text = trade.Notes;
+        if (trade.IsPartiallySold || trade.Sales.Count > 1)
+        {
+            _scu.Enabled = _sell.Enabled = _sold.Enabled = _destination.Enabled = false;
+            _hint.Text = $"This cargo lot has {trade.Sales.Count:N0} recorded sale transaction(s), {trade.SoldScu:N0} SCU sold and {trade.RemainingScu:N0} SCU remaining. Sale legs are protected so their UEX history stays intact.";
+        }
 
         prices.Click += (_, _) => UseObservedPrices(overwrite: true);
         foreach (var box in new[] { _commodity, _origin, _destination }) box.SelectedIndexChanged += (_, _) => { UseObservedPrices(overwrite: false); ShowSummary(); };
@@ -255,6 +264,8 @@ public sealed class TradeEditorForm : Form
         _sell.ValueChanged += (_, _) => { if (_sell.Value > 0) _sold.Checked = true; };
         UseObservedPrices(overwrite: false);
         ShowSummary();
+        if (trade.IsPartiallySold || trade.Sales.Count > 1)
+            _hint.Text = $"This cargo lot has {trade.Sales.Count:N0} recorded sale transaction(s), {trade.SoldScu:N0} SCU sold and {trade.RemainingScu:N0} SCU remaining. Sale legs are protected so their UEX history stays intact.";
     }
 
     private static ComboBox Picker() => new()
@@ -346,6 +357,15 @@ public sealed class TradeEditorForm : Form
         (Trade.LoadingSeconds, Trade.TravelSeconds, Trade.UnloadingSeconds) = (times[0], times[1], times[2]);
         Trade.BoughtUtc = _bought.Value.ToUniversalTime();
         Trade.SoldUtc = _sell.Value > 0 ? _sold.Value.ToUniversalTime() : null;
+        if (Trade.Sales.Count == 1)
+        {
+            var sale = Trade.Sales[0];
+            sale.TerminalId = Trade.DestinationId;
+            sale.TerminalName = Trade.DestinationName;
+            sale.Scu = Trade.Scu;
+            sale.PricePerScu = Trade.PriceSell ?? sale.PricePerScu;
+            sale.SoldUtc = Trade.SoldUtc ?? sale.SoldUtc;
+        }
         Trade.Notes = _notes.Text.Trim();
         DialogResult = DialogResult.OK;
         Close();

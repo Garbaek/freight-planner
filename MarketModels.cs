@@ -39,7 +39,25 @@ public sealed class MarketObservation
     public double? Price => IsBuy ? PriceBuy : PriceSell;
 }
 
-// One haul the player actually flew. It is open until the cargo is sold.
+// One actual sale from a cargo lot. A run may need several of these before its cargo is gone.
+public sealed class TradeSale
+{
+    public long Id { get; set; }
+    public long TradeId { get; set; }
+    public int TerminalId { get; set; }
+    public string TerminalName { get; set; } = "";
+    public int Scu { get; set; }
+    public double PricePerScu { get; set; }
+    public DateTime SoldUtc { get; set; }
+    public long? UexId { get; set; }
+    public SubmissionState UexSubmission { get; set; }
+    public string UexDetail { get; set; } = "";
+
+    public double Revenue => Scu * PricePerScu;
+}
+
+// One cargo lot the player actually bought and hauled. It is open until its sale rows account for
+// every bought SCU; a partial sale leaves the remainder on board.
 public sealed class TradeRecord
 {
     public long Id { get; set; }
@@ -50,8 +68,13 @@ public sealed class TradeRecord
     public string DestinationName { get; set; } = "";
     public int CommodityId { get; set; }
     public string CommodityName { get; set; } = "";
+    // The route suggestion, kept separately from what the terminal actually allowed the player to buy.
+    public int PlannedScu { get; set; }
+    public double? PlannedPriceBuy { get; set; }
+    public double? PlannedPriceSell { get; set; }
     public int Scu { get; set; }
     public double PriceBuy { get; set; }
+    // Weighted average of the sale rows. Kept as a column for older journal code and exports.
     public double? PriceSell { get; set; }
     public int? LoadingSeconds { get; set; }
     public int? TravelSeconds { get; set; }
@@ -74,8 +97,14 @@ public sealed class TradeRecord
     public string TrackerId { get; set; } = "";
     public SubmissionState TrackerSubmission { get; set; }
     public string TrackerDetail { get; set; } = "";
+    public List<TradeSale> Sales { get; set; } = [];
 
-    public bool IsCompleted => PriceSell is > 0 && SoldUtc is not null;
+    public int SoldScu => Sales.Count > 0 ? Sales.Sum(x => x.Scu) : PriceSell is > 0 && SoldUtc is not null ? Scu : 0;
+    public int RemainingScu => Math.Max(0, Scu - SoldScu);
+    public double SaleRevenue => Sales.Count > 0 ? Sales.Sum(x => x.Revenue) : SoldScu * (PriceSell ?? 0);
+    public double? AverageSellPrice => SoldScu > 0 ? SaleRevenue / SoldScu : null;
+    public bool IsCompleted => Scu > 0 && RemainingScu == 0 && SoldUtc is not null;
+    public bool IsPartiallySold => SoldScu > 0 && !IsCompleted;
     public string Route => $"{OriginName} → {DestinationName}";
 }
 

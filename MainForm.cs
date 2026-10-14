@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json;
 
 namespace FreightCopilot;
@@ -1095,7 +1096,7 @@ public sealed class MainForm : Form
                 foreach (var command in poll.Commands)
                 {
                     lastCommandId = Math.Max(lastCommandId, command.Id);
-                    if (command.Shortcut.StartsWith("FC1|", StringComparison.Ordinal))
+                    if (command.Shortcut.StartsWith("FC1|", StringComparison.Ordinal) || command.Shortcut.StartsWith("FCT2|", StringComparison.Ordinal))
                     {
                         if (!IsDisposed) BeginInvoke(() => ApplyTabletChecklistCommand(command));
                         continue;
@@ -1427,6 +1428,38 @@ public sealed class MainForm : Form
     private async Task ApplyTradeRunCommandAsync(TradeRun run, RemoteCommand command)
     {
         var parts = command.Shortcut.Split('|');
+        var timestamp = command.CreatedAtUtc == default ? DateTime.UtcNow : command.CreatedAtUtc.ToUniversalTime();
+        if (parts.Length >= 5 && parts[0] == "FCT2" && long.TryParse(parts[1], out var actualRevision))
+        {
+            if (actualRevision < run.FirstRevision) return;
+            try
+            {
+                if (parts.Length == 5 && parts[2] == "B" && int.TryParse(parts[3], out var boughtScu) &&
+                    double.TryParse(parts[4], NumberStyles.Float, CultureInfo.InvariantCulture, out var boughtPrice))
+                {
+                    run.RecordPurchase(boughtScu, boughtPrice, timestamp);
+                    await FinishTradeRunChangeAsync(run, TradeRun.Bought, true);
+                    return;
+                }
+                if (parts.Length == 6 && parts[2] == "S" && int.TryParse(parts[3], out var terminalId) &&
+                    int.TryParse(parts[4], out var soldScu) && double.TryParse(parts[5], NumberStyles.Float, CultureInfo.InvariantCulture, out var soldPrice))
+                {
+                    var option = run.SaleOptions.FirstOrDefault(x => x.TerminalId == terminalId);
+                    if (option is null) throw new InvalidOperationException("The selected buyer is not part of this run's current suggestions.");
+                    run.RecordSale(option.TerminalId, option.TerminalName, soldScu, soldPrice, timestamp);
+                    await FinishTradeRunChangeAsync(run, TradeRun.Sold, true);
+                    return;
+                }
+            }
+            catch (InvalidOperationException ex)
+            {
+                _status.Text = $"Tablet trade update was rejected: {ex.Message}";
+                await PublishTradeRunAsync(run);
+                return;
+            }
+            _status.Text = "Tablet trade amount was malformed and was ignored";
+            return;
+        }
         if (parts.Length != 6 || parts[0] != "FC1" ||
             !long.TryParse(parts[1], out var revision) || !int.TryParse(parts[2], out var stopIndex) ||
             !int.TryParse(parts[4], out var itemIndex) || !int.TryParse(parts[5], out var state))
@@ -1436,7 +1469,6 @@ public sealed class MainForm : Form
         }
         // Ticked on whatever the tablet showed just before it received this run.
         if (revision < run.FirstRevision) return;
-        var timestamp = command.CreatedAtUtc == default ? DateTime.UtcNow : command.CreatedAtUtc.ToUniversalTime();
         var kind = parts[3].ToUpperInvariant();
         var done = state == 1;
         var step = run.Steps.FirstOrDefault(x => x.Stop == stopIndex && x.Kind == kind && x.Item == itemIndex);
@@ -1447,6 +1479,21 @@ public sealed class MainForm : Form
 
     private async Task<string> ApplyWindowsTradeStepAsync(TradeRun run, TradeStep step, bool done)
     {
+        if (done && step.Id == TradeRun.Bought)
+        {
+            using var form = new TradeActualsForm(run, purchase: true);
+            if (form.ShowDialog(this) != DialogResult.OK) return run.Describe();
+            run.RecordPurchase(form.Scu, form.Price, DateTime.UtcNow);
+            return await FinishTradeRunChangeAsync(run, step.Id, true);
+        }
+        if (done && step.Id == TradeRun.Sold)
+        {
+            using var form = new TradeActualsForm(run, purchase: false);
+            if (form.ShowDialog(this) != DialogResult.OK) return run.Describe();
+            var terminal = form.Terminal ?? throw new InvalidOperationException("Choose a buyer.");
+            run.RecordSale(terminal.TerminalId, terminal.TerminalName, form.Scu, form.Price, DateTime.UtcNow);
+            return await FinishTradeRunChangeAsync(run, step.Id, true);
+        }
         var place = step.Key.Split('|');
         if (place.Length != 3 || !int.TryParse(place[0], out var stop) || !int.TryParse(place[2], out var item) ||
             !run.Apply(stop, place[1], item, done, DateTime.UtcNow))
@@ -1486,16 +1533,16 @@ public sealed class MainForm : Form
         }
 
         // A second surface may have unticked this checkpoint while a tablet publish was in flight.
-        if (done && record is not null && run.Done.ContainsKey(changedStep))
+        if (done && record is not null)
         {
             if (changedStep == TradeRun.Bought)
                 message += await SyncTradeCheckpointAsync(record.Id, buy: true);
             else if (changedStep == TradeRun.Sold)
             {
                 // If sync was enabled after the purchase, catch that side up before adding the sale.
-                if (run.Done.ContainsKey(TradeRun.Bought)) message += await SyncTradeCheckpointAsync(record.Id, buy: true);
+                if (run.IsBought) message += await SyncTradeCheckpointAsync(record.Id, buy: true);
                 message += await SyncTradeCheckpointAsync(record.Id, buy: false);
-                message += await SyncCommunityTradeAsync(record.Id);
+                if (run.IsCompleted) message += await SyncCommunityTradeAsync(record.Id);
             }
         }
 
@@ -1515,51 +1562,80 @@ public sealed class MainForm : Form
             var store = new MarketStore(AppContext.BaseDirectory);
             var trade = store.Trades().FirstOrDefault(x => x.Id == tradeId);
             if (trade is null) return " UEX trade sync could not find the journal row.";
-            var existingId = buy ? trade.UexBuyId : trade.UexSellId;
-            var existingState = buy ? trade.UexBuySubmission : trade.UexSellSubmission;
-            if (existingId is not null || existingState == SubmissionState.Submitted)
-                return $" UEX already has the {(buy ? "purchase" : "sale")}" + (existingId is { } id ? $" (trade {id})." : ".");
-
             var credentials = CredentialVault.Uex();
             if (credentials is null)
             {
                 const string detail = "UEX app token and secret key are not both stored.";
-                store.SetTradeSubmission(tradeId, buy, SubmissionState.Failed, detail, null);
+                if (buy) store.SetTradeSubmission(tradeId, true, SubmissionState.Failed, detail, null);
+                else foreach (var sale in trade.Sales.Where(x => x.UexSubmission != SubmissionState.Submitted)) store.SetSaleSubmission(sale.Id, SubmissionState.Failed, detail, null);
                 return $" {detail}";
             }
 
-            var price = buy ? trade.PriceBuy : trade.PriceSell;
-            var terminal = buy ? trade.OriginId : trade.DestinationId;
-            if (price is not > 0 || terminal <= 0)
+            if (buy)
             {
-                var detail = $"The {(buy ? "purchase" : "sale")} has no valid terminal or price for UEX.";
-                store.SetTradeSubmission(tradeId, buy, SubmissionState.Failed, detail, null);
-                return $" {detail}";
-            }
-
-            UexTradeResult result;
-            try
-            {
-                result = await new UexClient(AppContext.BaseDirectory).AddTradeAsync(new UexTradeSubmission
+                if (trade.UexBuyId is not null || trade.UexBuySubmission == SubmissionState.Submitted)
+                    return trade.UexBuyId is { } known ? $" UEX already has the purchase (trade {known})." : " UEX already has the purchase.";
+                if (trade.PriceBuy <= 0 || trade.OriginId <= 0)
                 {
-                    IdTerminal = terminal, IdCommodity = trade.CommodityId, Operation = buy ? "buy" : "sell",
-                    Scu = trade.Scu, Price = price.Value, IsProduction = 1
-                }, credentials, CancellationToken.None);
-            }
-            catch (UexException ex)
-            {
-                store.SetTradeSubmission(tradeId, buy, SubmissionState.Failed, ex.Message, null);
-                return $" UEX trade sync failed: {ex.Message}";
+                    const string detail = "The purchase has no valid terminal or price for UEX.";
+                    store.SetTradeSubmission(tradeId, true, SubmissionState.Failed, detail, null);
+                    return $" {detail}";
+                }
+
+                UexTradeResult result;
+                try
+                {
+                    result = await new UexClient(AppContext.BaseDirectory).AddTradeAsync(new UexTradeSubmission
+                    {
+                        IdTerminal = trade.OriginId, IdCommodity = trade.CommodityId, Operation = "buy",
+                        Scu = trade.Scu, Price = trade.PriceBuy, IsProduction = 1
+                    }, credentials, CancellationToken.None);
+                }
+                catch (UexException ex)
+                {
+                    store.SetTradeSubmission(tradeId, true, SubmissionState.Failed, ex.Message, null);
+                    return $" UEX trade sync failed: {ex.Message}";
+                }
+
+                if (!result.Ok || result.TradeId is null)
+                {
+                    var detail = result.Ok ? "UEX accepted the trade but did not return its ID, so it was not marked synchronized." : result.Message;
+                    store.SetTradeSubmission(tradeId, true, SubmissionState.Failed, detail, null);
+                    return $" UEX trade sync failed: {detail}";
+                }
+                store.SetTradeSubmission(tradeId, true, SubmissionState.Submitted, $"UEX trade {result.TradeId}", result.TradeId);
+                return $" Purchase added to UEX trade history (trade {result.TradeId}).";
             }
 
-            if (!result.Ok || result.TradeId is null)
+            var messages = new List<string>();
+            foreach (var sale in trade.Sales.Where(x => x.UexId is null && x.UexSubmission != SubmissionState.Submitted))
             {
-                var detail = result.Ok ? "UEX accepted the trade but did not return its ID, so it was not marked synchronized." : result.Message;
-                store.SetTradeSubmission(tradeId, buy, SubmissionState.Failed, detail, null);
-                return $" UEX trade sync failed: {detail}";
+                try
+                {
+                    var result = await new UexClient(AppContext.BaseDirectory).AddTradeAsync(new UexTradeSubmission
+                    {
+                        IdTerminal = sale.TerminalId, IdCommodity = trade.CommodityId, Operation = "sell",
+                        Scu = sale.Scu, Price = sale.PricePerScu, IsProduction = 1
+                    }, credentials, CancellationToken.None);
+                    if (!result.Ok || result.TradeId is null)
+                    {
+                        var detail = result.Ok ? "UEX did not return a trade ID." : result.Message;
+                        store.SetSaleSubmission(sale.Id, SubmissionState.Failed, detail, null);
+                        messages.Add($"UEX sale sync failed: {detail}");
+                    }
+                    else
+                    {
+                        store.SetSaleSubmission(sale.Id, SubmissionState.Submitted, $"UEX trade {result.TradeId}", result.TradeId);
+                        messages.Add($"{sale.Scu:N0} SCU sale added to UEX (trade {result.TradeId})");
+                    }
+                }
+                catch (UexException ex)
+                {
+                    store.SetSaleSubmission(sale.Id, SubmissionState.Failed, ex.Message, null);
+                    messages.Add($"UEX sale sync failed: {ex.Message}");
+                }
             }
-            store.SetTradeSubmission(tradeId, buy, SubmissionState.Submitted, $"UEX trade {result.TradeId}", result.TradeId);
-            return $" {(buy ? "Purchase" : "Sale")} added to UEX trade history (trade {result.TradeId}).";
+            return messages.Count == 0 ? " UEX already has every sale." : " " + string.Join("; ", messages) + ".";
         }
         catch (Exception ex) when (ex is Microsoft.Data.Sqlite.SqliteException or IOException or InvalidOperationException)
         {

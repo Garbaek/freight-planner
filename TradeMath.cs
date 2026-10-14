@@ -23,9 +23,9 @@ public static class TradeMath
         return parts.Any(x => x is > 0) ? parts.Sum(x => Math.Max(0, x ?? 0)) : null;
     }
 
-    public static double? Gross(TradeRecord trade) => trade.IsCompleted ? GrossProfit(trade.Scu, trade.PriceBuy, trade.PriceSell!.Value) : null;
+    public static double? Gross(TradeRecord trade) => trade.IsCompleted ? trade.SaleRevenue - Investment(trade.Scu, trade.PriceBuy) : null;
 
-    public static double? Net(TradeRecord trade) => trade.IsCompleted ? NetProfit(trade.Scu, trade.PriceBuy, trade.PriceSell!.Value, trade.OperatingCosts) : null;
+    public static double? Net(TradeRecord trade) => Gross(trade) is { } gross ? gross - (trade.OperatingCosts ?? 0) : null;
 }
 
 public sealed record TradeGroup(string Name, int Runs, int Scu, double Profit, double? ProfitPerHour);

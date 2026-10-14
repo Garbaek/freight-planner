@@ -5,6 +5,9 @@ import org.json.JSONObject
 // One box of a trade run. The key ("stop|kind|item") is where the Windows app expects the tick;
 // steps that share an alternative are two ways of doing the same thing.
 data class TradeStep(val id: String, val key: String, val label: String, val alternative: String)
+data class TradeSaleOption(val terminalId: Int, val name: String, val place: String, val detail: String, val price: Double) {
+    override fun toString(): String = "$place — ${String.format(java.util.Locale.US, "%,.2f", price)} aUEC/SCU"
+}
 
 // A "what can I haul from here" run sent from the Windows app: what to buy where, where to sell it,
 // and the steps of flying it. The relay only knows flight plans, so the run arrives as JSON in the
@@ -25,6 +28,12 @@ data class TradeRun(
     val distance: Double?,
     val source: String,
     val confidence: String,
+    val boughtScu: Int,
+    val actualBuy: Double?,
+    val soldScu: Int,
+    val remainingScu: Int,
+    val realizedRevenue: Double,
+    val saleOptions: List<TradeSaleOption>,
     val steps: List<TradeStep>
 ) {
     val outlay: Double get() = scu * buy
@@ -52,12 +61,20 @@ data class TradeRun(
                 val json = JSONObject(summary)
                 if (json.optInt("trade", 0) != 1) return null
                 val stepsJson = json.getJSONArray("steps")
+                val optionsJson = json.optJSONArray("saleOptions")
                 TradeRun(
                     json.optString("run"), json.optString("ship"), json.getString("commodity"), json.getInt("scu"),
                     json.optString("crates"), json.getDouble("buy"), json.getDouble("sell"), json.optString("from"),
                     json.optString("to"), json.optString("fromDetail"), json.optString("toDetail"),
                     if (json.isNull("distance")) null else json.optDouble("distance"),
-                    json.optString("source"), json.optString("confidence"),
+                    json.optString("source"), json.optString("confidence"), json.optInt("boughtScu"),
+                    if (json.isNull("actualBuy")) null else json.optDouble("actualBuy"), json.optInt("soldScu"),
+                    json.optInt("remainingScu", json.getInt("scu")), json.optDouble("realizedRevenue"),
+                    if (optionsJson == null) emptyList() else List(optionsJson.length()) { index ->
+                        val option = optionsJson.getJSONObject(index)
+                        TradeSaleOption(option.getInt("terminalId"), option.getString("name"), option.getString("place"),
+                            option.optString("detail"), option.getDouble("price"))
+                    },
                     List(stepsJson.length()) { index ->
                         val step = stepsJson.getJSONObject(index)
                         TradeStep(step.getString("id"), step.getString("key"), step.getString("label"), step.optString("alt"))
