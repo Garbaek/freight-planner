@@ -333,4 +333,67 @@ public class TradeRunTests
         Assert.Contains("29:31", Flown().Describe());
         Assert.Contains("trading journal", Flown().Describe());
     }
+
+    [Fact]
+    public void A_partial_run_round_trips_for_restart_without_reusing_an_old_relay_revision()
+    {
+        var run = Run();
+        run.FirstRevision = 42;
+        run.TradeId = 17;
+        run.RecordPurchase(20, 28_200, After(1));
+        run.Apply(0, "P", 1, true, After(2));
+        run.Apply(0, "K", 0, true, After(3));
+        var sale = run.RecordSale(778, "Levski", 8, 34_000, After(20));
+        sale.Id = 91;
+        sale.TradeId = 17;
+        sale.UexId = 501;
+        sale.UexSubmission = SubmissionState.Submitted;
+
+        var restored = TradeRun.Restore(run.ToState());
+
+        Assert.Equal(17, restored.TradeId);
+        Assert.Equal(0, restored.FirstRevision);
+        Assert.Equal((20, 8, 12), (restored.BoughtScu, restored.SoldScu, restored.RemainingScu));
+        Assert.Equal(28_200, restored.ActualBuyPrice);
+        Assert.Equal([TradeRun.Bought, TradeRun.Auto, TradeRun.Packed], restored.Done.Keys.OrderBy(x => restored.Done[x]));
+        var restoredSale = Assert.Single(restored.Sales);
+        Assert.Equal((91L, 17L, 501L), (restoredSale.Id, restoredSale.TradeId, restoredSale.UexId));
+        Assert.Equal(SubmissionState.Submitted, restoredSale.UexSubmission);
+        Assert.False(restored.IsCompleted);
+    }
+
+    [Fact]
+    public void A_newer_journal_row_wins_during_crash_recovery()
+    {
+        var run = Run();
+        run.RecordPurchase(20, 28_200, After(1));
+        run.TradeId = 17;
+        var restored = TradeRun.Restore(run.ToState());
+        var record = new TradeRecord
+        {
+            Id = 17,
+            OriginId = 843,
+            CommodityId = 18,
+            Scu = 20,
+            PriceBuy = 28_250,
+            BoughtUtc = After(1),
+            StepTimes = JsonSerializer.Serialize(new[] { new StepTime("Packed", After(3), 120) }),
+            Sales =
+            [
+                new TradeSale
+                {
+                    Id = 92, TradeId = 17, TerminalId = 778, TerminalName = "Levski", Scu = 8,
+                    PricePerScu = 34_100, SoldUtc = After(20), UexId = 502, UexSubmission = SubmissionState.Submitted
+                }
+            ]
+        };
+
+        restored.MergeJournal(record);
+
+        Assert.Equal(28_250, restored.ActualBuyPrice);
+        Assert.Equal(12, restored.RemainingScu);
+        Assert.Equal(After(3), restored.Done[TradeRun.Packed]);
+        Assert.Equal(502, Assert.Single(restored.Sales).UexId);
+        Assert.DoesNotContain(TradeRun.Sold, restored.Done.Keys);
+    }
 }

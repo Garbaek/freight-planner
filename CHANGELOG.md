@@ -13,6 +13,8 @@
 - A separate opt-in community tracker sends completed runs to the Docker-hosted account server. The website shows total sales volume, SCU, completed runs, participating pilots and a top-ten leaderboard; retries are idempotent and opting out hides earlier contributions from public totals.
 - The website now has ALTCHA-protected account creation followed by email verification. Windows and Android open that page for new accounts, while sign-in remains in the apps.
 - Both apps have an off-by-default anonymous launch counter. The server keeps daily platform/version totals only, with no installation or account identifier and no per-launch event rows.
+- An unfinished commodity run now survives a Windows restart with its real purchase, partial sales and checkpoint times. Startup reconciles the saved run with the newer SQLite journal when necessary, retains UEX transaction IDs, reopens the Windows monitor and safely republishes after the tablet is linked again.
+- Active-session writes are atomic, and **Clear batch** now clears hauling contracts without discarding the separate commodity run.
 
 ## 0.8.2 — 2026-10-11
 

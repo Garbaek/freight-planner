@@ -15,6 +15,38 @@ public sealed record TradeSaleOption(int TerminalId, string TerminalName, string
     public string Place => StarSystem.Length > 0 ? $"{TerminalName} — {StarSystem}" : TerminalName;
 }
 
+// The durable form of a live run. It deliberately contains only plain data: relay revisions belong to one
+// Windows process and are assigned again after recovery, while journal/UEX IDs survive so retries stay idempotent.
+public sealed class TradeRunState
+{
+    public int SchemaVersion { get; set; } = 1;
+    public string Ship { get; set; } = "";
+    public int OriginId { get; set; }
+    public string Origin { get; set; } = "";
+    public string OriginSystem { get; set; } = "";
+    public string OriginDetail { get; set; } = "";
+    public int DestinationId { get; set; }
+    public string Destination { get; set; } = "";
+    public string DestinationSystem { get; set; } = "";
+    public string DestinationDetail { get; set; } = "";
+    public int CommodityId { get; set; }
+    public string Commodity { get; set; } = "";
+    public int PlannedScu { get; set; }
+    public double PlannedPriceBuy { get; set; }
+    public double PlannedPriceSell { get; set; }
+    public string Crates { get; set; } = "";
+    public double? Distance { get; set; }
+    public string Source { get; set; } = "";
+    public string Confidence { get; set; } = "";
+    public DateTime StartedUtc { get; set; }
+    public long TradeId { get; set; }
+    public int BoughtScu { get; set; }
+    public double ActualBuyPrice { get; set; }
+    public List<TradeSaleOption> SaleOptions { get; set; } = [];
+    public List<TradeSale> Sales { get; set; } = [];
+    public Dictionary<string, DateTime> Done { get; set; } = [];
+}
+
 // A "what can I haul from here" run sent to the tablet: what to buy where, where to sell it, and the steps of
 // flying it. The tablet ticks the steps; each tick's time is kept, and the finished run goes into the journal.
 public sealed class TradeRun
@@ -111,6 +143,140 @@ public sealed class TradeRun
         if (_sales.Count > 0) throw new InvalidOperationException("The purchase cannot be changed after a sale has been recorded.");
         (_boughtScu, _actualBuyPrice) = (scu, pricePerScu);
         _done[Bought] = utc.ToUniversalTime();
+    }
+
+    public TradeRunState ToState() => new()
+    {
+        Ship = Ship,
+        OriginId = OriginId,
+        Origin = Origin,
+        OriginSystem = OriginSystem,
+        OriginDetail = OriginDetail,
+        DestinationId = DestinationId,
+        Destination = Destination,
+        DestinationSystem = DestinationSystem,
+        DestinationDetail = DestinationDetail,
+        CommodityId = CommodityId,
+        Commodity = Commodity,
+        PlannedScu = Scu,
+        PlannedPriceBuy = PriceBuy,
+        PlannedPriceSell = PriceSell,
+        Crates = Crates,
+        Distance = Distance,
+        Source = Source,
+        Confidence = Confidence,
+        StartedUtc = Utc(StartedUtc),
+        TradeId = TradeId,
+        BoughtScu = BoughtScu,
+        ActualBuyPrice = IsBought ? ActualBuyPrice : 0,
+        SaleOptions = SaleOptions.ToList(),
+        Sales = _sales.Select(CloneSale).ToList(),
+        Done = _done.ToDictionary(x => x.Key, x => Utc(x.Value))
+    };
+
+    public static TradeRun Restore(TradeRunState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        if (string.IsNullOrWhiteSpace(state.Ship) || string.IsNullOrWhiteSpace(state.Origin) ||
+            string.IsNullOrWhiteSpace(state.Destination) || string.IsNullOrWhiteSpace(state.Commodity) ||
+            state.PlannedScu <= 0 || state.PlannedPriceBuy <= 0 || state.PlannedPriceSell <= 0 ||
+            !double.IsFinite(state.PlannedPriceBuy) || !double.IsFinite(state.PlannedPriceSell) || state.StartedUtc == default)
+            throw new InvalidDataException("The saved trade run is incomplete.");
+
+        var originDetail = state.OriginDetail ?? "";
+        var origin = new UexTerminal
+        {
+            Id = state.OriginId,
+            Nickname = state.Origin,
+            Displayname = state.Origin,
+            Name = originDetail.Length > 0 ? originDetail : state.Origin,
+            StarSystemName = state.OriginSystem
+        };
+        var options = (state.SaleOptions ?? []).Where(ValidOption).ToList();
+        var run = new TradeRun(state.Ship, origin, state.DestinationId, state.Destination, state.DestinationSystem,
+            state.CommodityId, state.Commodity, state.PlannedScu, state.PlannedPriceBuy, state.PlannedPriceSell,
+            state.Crates ?? "", state.Distance, state.Source ?? "", state.Confidence ?? "", Utc(state.StartedUtc), state.DestinationDetail ?? "", options);
+        run.TradeId = Math.Max(0, state.TradeId);
+
+        var validSteps = run.Steps.Select(x => x.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (var (id, utc) in state.Done ?? [])
+            if (validSteps.Contains(id) && utc != default) run._done[id] = Utc(utc);
+
+        if (state.BoughtScu > 0)
+        {
+            if (state.BoughtScu > run.Scu || state.ActualBuyPrice <= 0 || !double.IsFinite(state.ActualBuyPrice))
+                throw new InvalidDataException("The saved purchase is invalid.");
+            (run._boughtScu, run._actualBuyPrice) = (state.BoughtScu, state.ActualBuyPrice);
+        }
+        foreach (var sale in (state.Sales ?? []).OrderBy(x => x.SoldUtc))
+        {
+            if (sale.TerminalId <= 0 || string.IsNullOrWhiteSpace(sale.TerminalName) || sale.Scu <= 0 ||
+                sale.PricePerScu <= 0 || !double.IsFinite(sale.PricePerScu) || sale.SoldUtc == default)
+                throw new InvalidDataException("A saved sale is invalid.");
+            run._sales.Add(CloneSale(sale));
+        }
+        if (run._sales.Sum(x => x.Scu) > run.BoughtScu)
+            throw new InvalidDataException("The saved sales exceed the purchased cargo.");
+        if (run.RemainingScu > 0) run._done.Remove(Sold);
+        else if (run._sales.Count > 0) run._done[Sold] = Utc(run._sales.Max(x => x.SoldUtc));
+        // FirstRevision intentionally remains zero. A new relay session assigns a new safe boundary.
+        return run;
+    }
+
+    // The SQLite journal is committed before the session file. If Windows stopped between those writes, this
+    // makes its purchase/sales and external submission IDs authoritative without duplicating a transaction.
+    public void MergeJournal(TradeRecord record)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        if (record.Id <= 0 || record.Scu <= 0 || record.PriceBuy <= 0 ||
+            (record.CommodityId > 0 && CommodityId > 0 && record.CommodityId != CommodityId) ||
+            (record.OriginId > 0 && OriginId > 0 && record.OriginId != OriginId))
+            throw new InvalidDataException("The journal row does not belong to this trade run.");
+
+        (TradeId, _boughtScu, _actualBuyPrice) = (record.Id, record.Scu, record.PriceBuy);
+        _done[Bought] = Utc(record.BoughtUtc);
+        if (!string.IsNullOrWhiteSpace(record.StepTimes))
+        {
+            try
+            {
+                foreach (var item in JsonSerializer.Deserialize<List<StepTime>>(record.StepTimes, JsonDefaults.Options()) ?? [])
+                {
+                    var step = Steps.FirstOrDefault(x => x.Label.Equals(item.Label, StringComparison.Ordinal));
+                    if (step is not null && item.Utc != default) _done[step.Id] = Utc(item.Utc);
+                }
+            }
+            catch (JsonException) { }
+        }
+
+        _sales.Clear();
+        foreach (var sale in record.Sales.OrderBy(x => x.SoldUtc)) _sales.Add(CloneSale(sale));
+        if (_sales.Sum(x => x.Scu) > BoughtScu) throw new InvalidDataException("The journal sales exceed the purchased cargo.");
+        if (record.IsCompleted && record.SoldUtc is { } sold) _done[Sold] = Utc(sold);
+        else _done.Remove(Sold);
+    }
+
+    // Last-resort recovery when the session file itself was lost after the journal row had already committed.
+    public static TradeRun Recover(TradeRecord record)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        var plannedScu = record.PlannedScu > 0 ? record.PlannedScu : record.Scu;
+        var buy = record.PlannedPriceBuy is > 0 ? record.PlannedPriceBuy.Value : record.PriceBuy;
+        var sell = record.PlannedPriceSell is > 0 ? record.PlannedPriceSell.Value : record.AverageSellPrice ?? buy;
+        var destinationId = record.PlannedDestinationId > 0 ? record.PlannedDestinationId : record.DestinationId;
+        var destination = !string.IsNullOrWhiteSpace(record.PlannedDestinationName) ? record.PlannedDestinationName : record.DestinationName;
+        var started = record.BoughtUtc;
+        try
+        {
+            var first = JsonSerializer.Deserialize<List<StepTime>>(record.StepTimes, JsonDefaults.Options())?.FirstOrDefault();
+            if (first is not null) started = first.Utc.AddSeconds(-Math.Max(0, first.Seconds));
+        }
+        catch (JsonException) { }
+        var origin = new UexTerminal { Id = record.OriginId, Name = record.OriginName, Nickname = record.OriginName };
+        var run = new TradeRun(record.Ship, origin, destinationId, destination, "", record.CommodityId,
+            record.CommodityName, plannedScu, buy, sell, $"{plannedScu:N0} SCU", null,
+            "Recovered from local journal", "Recovered", Utc(started));
+        run.MergeJournal(record);
+        return run;
     }
 
     public TradeSale RecordSale(int terminalId, string terminalName, int scu, double pricePerScu, DateTime utc)
@@ -271,6 +437,27 @@ public sealed class TradeRun
     }
 
     private static string Place(string name, string system) => system.Length > 0 ? $"{name} — {system}" : name;
+
+    private static bool ValidOption(TradeSaleOption option) => option.TerminalId > 0 && !string.IsNullOrWhiteSpace(option.TerminalName) &&
+                                                               option.Price > 0 && double.IsFinite(option.Price);
+
+    private static TradeSale CloneSale(TradeSale sale) => new()
+    {
+        Id = sale.Id,
+        TradeId = sale.TradeId,
+        TerminalId = sale.TerminalId,
+        TerminalName = sale.TerminalName,
+        Scu = sale.Scu,
+        PricePerScu = sale.PricePerScu,
+        SoldUtc = Utc(sale.SoldUtc),
+        UexId = sale.UexId,
+        UexSubmission = sale.UexSubmission,
+        UexDetail = sale.UexDetail
+    };
+
+    private static DateTime Utc(DateTime value) => value.Kind == DateTimeKind.Unspecified
+        ? DateTime.SpecifyKind(value, DateTimeKind.Utc)
+        : value.ToUniversalTime();
 
     // The relay's text is shown on the tablet as it is, so it must not depend on this PC's number format.
     private static string Whole(double value) => value.ToString("#,0.##", CultureInfo.InvariantCulture);

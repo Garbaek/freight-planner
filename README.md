@@ -105,6 +105,8 @@ The clock starts when the run starts. Next to each ticked step both monitors sho
 
 At **Bought commodities**, Windows or Android asks what the terminal actually supplied and charged; that actual cargo lot starts an open journal row while the route estimate remains available for comparison. **Record sale** asks for the buyer, actual SCU and price. If demand only takes part of the load, the monitor shows what remains and lets the next sale use the same buyer or one of the suggested alternatives. The run completes after the final SCU is sold, with loading, travel and unloading time taken from the ticks; loading runs until **Packed**. Optional UEX history sync records the purchase and every sale separately and remembers each returned ID. A run that never gets as far as a confirmed purchase leaves nothing in the journal.
 
+An unfinished run survives a Windows restart. Freight Planner reopens the monitor with its actual purchase, partial sales and checkpoint times, reconciles it with the local journal, and assigns a fresh tablet revision so an old command cannot be applied twice. Link the tablet again after Windows starts; the restored run is then published back to it. Clearing the hauling-contract batch does not clear a commodity run.
+
 A trade run and a contract plan share the tablet: sending one replaces the other. An older tablet app shows the run as two stops with the steps as checklist items, without the clock, and with the run's raw data in the line under the title.
 
 ## How the planner decides
@@ -172,7 +174,7 @@ Android app: see [`android/README.md`](android/README.md).
 - The loading time on the confirmation dialog is in a font Windows OCR does not read. It stays empty; type it into the journal.
 - Crate sizes are read from the row of boxes under AVAILABLE CARGO SIZE. When a row is scrolled half out of view they stay empty.
 - The trading window watches for new terminal screenshots only while it is open.
-- An active trade run lives as long as the Windows app runs: after a restart the tablet has to be linked and the run started again, and ticks made while Windows was unavailable do not reach the journal. During an active link, the shared checkpoint times come from the device on which each box was ticked.
+- The tablet still has to be linked again each time Windows starts. The active trade run is restored and republished after linking, but ticks made against the tablet's expired link while Windows was unavailable cannot reach the journal. During an active link, the shared checkpoint times come from the device on which each box was ticked.
 - There is no password reset yet, and the Windows app does not stay signed in between starts.
 - Release builds are unsigned, so Windows SmartScreen and Android warn before installing.
 

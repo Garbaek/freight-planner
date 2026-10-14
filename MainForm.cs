@@ -121,7 +121,7 @@ public sealed class MainForm : Form
         LoadSettings();
         _ = SendAnonymousLaunchAsync();
         RestoreSession();
-        _status.Text = _ocr is null ? "Local OCR unavailable" : _contracts.Count > 0
+        _status.Text = _activeTradeRun is { } restoredRun ? $"Restored trade run — {restoredRun.Describe()}" : _ocr is null ? "Local OCR unavailable" : _contracts.Count > 0
             ? $"Local OCR ready — restored {_contracts.Count:N0} active contract(s)"
             : $"Local OCR ready — {_ocr.EngineDescription}";
         _pollTimer.Tick += async (_, _) => await PollAsync();
@@ -132,6 +132,7 @@ public sealed class MainForm : Form
         {
             if (!Directory.Exists(_folder.Text)) await FindScreenshotFolderAsync(announce: false);
             if (_contracts.Count > 0 && _currentManifest is null) await PlanBatchAsync(false);
+            if (_activeTradeRun is not null) OpenTradeRunMonitor();
         };
         FormClosing += (_, _) => { SaveSettings(); SaveSession(); _receiverCancellation?.Cancel(); _pollTimer.Stop(); _planTimer.Stop(); _countdownTimer.Stop(); };
     }
@@ -192,12 +193,14 @@ public sealed class MainForm : Form
         _clear.Click += (_, _) =>
         {
             _contracts.Clear(); _queued.Clear(); _currentManifest = null; _planWarning = null;
-            _execution = null; _sessionStore.Clear();
+            _execution = null;
             _lastPlannedFingerprint = null; _lastSavedPlanFingerprint = null; _displayedSelectionKey = "";
             _timerOverrideSelectionKey = "";
             _sendTablet.Enabled = false;
             _planRevision++;
             RefreshGrid();
+            // Clearing a hauling-contract batch must not discard a live commodity run.
+            SaveSession();
         };
         _account.Click += async (_, _) => await ManageAccountAsync();
         _pairPhone.Click += async (_, _) => await PairPhoneAsync();
@@ -1364,6 +1367,7 @@ public sealed class MainForm : Form
         _activeTradeRun = _tabletRun = run;
         _tabletPlan = null;
         _tradeMonitor.Enabled = true;
+        SaveSession();
         OpenTradeRunMonitor();
 
         if (_authSession is null || _pairingClient is null || _pairingRegistration is null || !_tabletLinked)
@@ -1523,6 +1527,10 @@ public sealed class MainForm : Form
         {
             message += $" The trading journal could not be written: {ex.Message}";
         }
+
+        // The journal is written first. Recovery can therefore merge a newer committed row into this snapshot
+        // if Windows stops between the two writes, without adding the purchase or sale twice.
+        SaveSession();
 
         // Publish every accepted change. Android only redraws a changed revision, so the full timestamp map
         // is also the acknowledgement that makes an untick on either device visible on the other.
@@ -1769,6 +1777,49 @@ public sealed class MainForm : Form
             _contracts.Add(contract);
         }
         _execution = snapshot.Execution;
+        TradeRun? restoredRun = null;
+        var savedRunWasInvalid = false;
+        if (snapshot.ActiveTradeRun is { } saved)
+        {
+            try
+            {
+                restoredRun = TradeRun.Restore(saved);
+                if (restoredRun.TradeId > 0)
+                {
+                    var journal = new MarketStore(AppContext.BaseDirectory).Trades().FirstOrDefault(x => x.Id == restoredRun.TradeId);
+                    if (journal is not null) restoredRun.MergeJournal(journal);
+                }
+            }
+            catch (Exception ex) when (ex is JsonException or IOException or InvalidDataException or InvalidOperationException or Microsoft.Data.Sqlite.SqliteException)
+            {
+                savedRunWasInvalid = true;
+                _status.Text = $"The saved trade run could not be read: {ex.Message}";
+            }
+        }
+
+        // An atomic schema-2 session normally covers every run. This fallback upgrades an older, missing or
+        // corrupt session whose synchronized journal row was already committed before Windows stopped.
+        if (restoredRun is null && (snapshot.SchemaVersion < 2 || savedRunWasInvalid))
+        {
+            try
+            {
+                var journal = new MarketStore(AppContext.BaseDirectory).Trades()
+                    .Where(x => !x.IsCompleted && !string.IsNullOrWhiteSpace(x.StepTimes) &&
+                                x.Notes.Contains("synchronized trade monitor", StringComparison.OrdinalIgnoreCase))
+                    .OrderByDescending(x => x.BoughtUtc)
+                    .FirstOrDefault();
+                if (journal is not null) restoredRun = TradeRun.Recover(journal);
+            }
+            catch (Exception ex) when (ex is JsonException or IOException or InvalidDataException or InvalidOperationException or Microsoft.Data.Sqlite.SqliteException)
+            {
+                _status.Text = $"The saved trade run could not be recovered: {ex.Message}";
+            }
+        }
+        if (restoredRun is { IsCompleted: false })
+        {
+            _activeTradeRun = _tabletRun = restoredRun;
+            _tradeMonitor.Enabled = true;
+        }
         if (_contracts.Count > 0)
         {
             RefreshGrid();
@@ -1778,7 +1829,7 @@ public sealed class MainForm : Form
 
     private void SaveSession()
     {
-        try { _sessionStore.Save(_contracts, _execution); } catch { }
+        try { _sessionStore.Save(_contracts, _execution, _activeTradeRun); } catch { }
     }
 
     private Color UrgencyColor(ContractScan scan)
