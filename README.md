@@ -87,7 +87,9 @@ The guide also asks for the screenshot to show the whole terminal and the correc
 
 Use **Account** to register or sign in. Registering sends a verification link to the email address, and the account can sign in only after that link is opened. Then choose **Pair phone**: Windows shows a QR code and a six-digit code. In the Android app, tap **SCAN PC QR CODE** on the sign-in screen; the scan signs the tablet in and links it. Both codes expire after 10 minutes and work once.
 
-Nothing reaches the tablet until you press **Send to tablet**, so you can first check, uncheck or correct contracts in the Windows app. The tablet then keeps that plan while you go on changing things on the PC; only the current-stop marker follows along. The button reads **Sent to tablet ✓** while the tablet has the same checklist as the PC, and pressing it again re-sends it. The link has to be made again each time the Windows app is started.
+Windows keeps the rotating account refresh token and the paired tablet's receiver token in Windows Credential Manager, encrypted for the signed-in Windows user; neither secret is written to `settings.json`. A valid account and tablet link resume automatically after restarting the app. Signing out always removes both local credentials and asks the server to revoke the account refresh token when it is reachable. The tablet pairing lasts up to seven days and needs a fresh QR/code after it expires or the account server restarts.
+
+Nothing reaches the tablet until you press **Send to tablet**, so you can first check, uncheck or correct contracts in the Windows app. The tablet then keeps that plan while you go on changing things on the PC; only the current-stop marker follows along. The button reads **Sent to tablet ✓** while the tablet has the same checklist as the PC, and pressing it again re-sends it. A remembered link reconnects automatically while its seven-day server session remains valid.
 
 **A monitored trade run.** In the trading window, select a row on the Trade ideas tab and press **Start run**. Windows opens a live trade monitor with what to buy and where, the price, outlay and crates; where to haul it and sell it, the sale and planned profit; a running clock; and the steps below. If a tablet is linked, it shows the same monitor. Tick on either screen and Windows acknowledges the shared state back to the other:
 
@@ -174,8 +176,8 @@ Android app: see [`android/README.md`](android/README.md).
 - The loading time on the confirmation dialog is in a font Windows OCR does not read. It stays empty; type it into the journal.
 - Crate sizes are read from the row of boxes under AVAILABLE CARGO SIZE. When a row is scrolled half out of view they stay empty.
 - The trading window watches for new terminal screenshots only while it is open.
-- The tablet still has to be linked again each time Windows starts. The active trade run is restored and republished after linking, but ticks made against the tablet's expired link while Windows was unavailable cannot reach the journal. During an active link, the shared checkpoint times come from the device on which each box was ticked.
-- There is no password reset yet, and the Windows app does not stay signed in between starts.
+- A remembered tablet link resumes automatically and republishes the restored run. If its seven-day session expired or the account server restarted, it must be linked again; ticks made against that expired link cannot reach the journal. During an active link, the shared checkpoint times come from the device on which each box was ticked.
+- There is no password reset yet.
 - Release builds are unsigned, so Windows SmartScreen and Android warn before installing.
 
 ## Licence

@@ -15,6 +15,8 @@
 - Both apps have an off-by-default anonymous launch counter. The server keeps daily platform/version totals only, with no installation or account identifier and no per-launch event rows.
 - An unfinished commodity run now survives a Windows restart with its real purchase, partial sales and checkpoint times. Startup reconciles the saved run with the newer SQLite journal when necessary, retains UEX transaction IDs, reopens the Windows monitor and safely republishes after the tablet is linked again.
 - Active-session writes are atomic, and **Clear batch** now clears hauling contracts without discarding the separate commodity run.
+- Windows now stays signed in with a rotating refresh token protected by Windows Credential Manager. Sign-out removes the local credential even when the server is unavailable and attempts to revoke it remotely.
+- A still-valid tablet pairing reconnects automatically after a Windows restart. Its receiver token and last processed command ID are protected with the account session, preventing an old queued purchase or sale from being replayed after recovery.
 
 ## 0.8.2 — 2026-10-11
 

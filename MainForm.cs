@@ -45,6 +45,7 @@ public sealed class MainForm : Form
     private PairingRegistration? _pairingRegistration;
     private readonly SemaphoreSlim _mobilePlanPublishGate = new(1, 1);
     private readonly SemaphoreSlim _uexTradeSyncGate = new(1, 1);
+    private readonly SemaphoreSlim _accountRefreshGate = new(1, 1);
     private string _lastPublishedMobilePlan = "";
     private long _mobilePlanRevision;
 
@@ -130,9 +131,11 @@ public sealed class MainForm : Form
         _countdownTimer.Start();
         Shown += async (_, _) =>
         {
+            var accountRestore = RestoreAccountAsync();
             if (!Directory.Exists(_folder.Text)) await FindScreenshotFolderAsync(announce: false);
             if (_contracts.Count > 0 && _currentManifest is null) await PlanBatchAsync(false);
             if (_activeTradeRun is not null) OpenTradeRunMonitor();
+            await accountRestore;
         };
         FormClosing += (_, _) => { SaveSettings(); SaveSession(); _receiverCancellation?.Cancel(); _pollTimer.Stop(); _planTimer.Stop(); _countdownTimer.Stop(); };
     }
@@ -955,6 +958,155 @@ public sealed class MainForm : Form
         try { File.WriteAllText(_settingsPath, JsonSerializer.Serialize(_settings, JsonDefaults.Options())); } catch { }
     }
 
+    private async Task RestoreAccountAsync()
+    {
+        _account.Enabled = false;
+        try
+        {
+            var saved = AccountSessionVault.Account();
+            if (saved is null)
+            {
+                _accountStatus.Text = "Signed out";
+                return;
+            }
+            _apiBaseUrl = saved.ServerUrl;
+            _authSession = saved.Session;
+            SaveSettings();
+            if (_authSession.RefreshTokenExpiresAtUtc <= DateTime.UtcNow)
+            {
+                SignOutLocally("Saved sign-in expired — sign in again");
+                return;
+            }
+
+            try
+            {
+                await RefreshAccountAsync(new AccountClient(_apiBaseUrl), force: true);
+                _accountStatus.Text = $"Signed in: {_authSession.Account.DisplayName}";
+            }
+            catch (AccountApiException ex) when (ex.StatusCode == 401)
+            {
+                SignOutLocally("Saved sign-in expired — sign in again");
+                return;
+            }
+            catch (Exception ex) when (ex is AccountApiException or HttpRequestException or TaskCanceledException)
+            {
+                // Retain the encrypted refresh token. Pairing uses its own receiver token and can still resume;
+                // account operations will retry the rotating refresh when they are next requested.
+                _accountStatus.Text = $"Signed in offline: {_authSession.Account.DisplayName} — {ex.Message}";
+            }
+
+            _pairPhone.Enabled = true;
+            RestorePairingSession();
+            if (_settings.Trade.ShareTradeStats) _ = SetTradeTrackerEnabledAsync(true);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or UriFormatException)
+        {
+            SignOutLocally($"Saved sign-in could not be restored: {ex.Message}");
+        }
+        finally { _account.Enabled = true; }
+    }
+
+    private async Task<AuthSession> RefreshAccountAsync(AccountClient client, bool force = false)
+    {
+        await _accountRefreshGate.WaitAsync();
+        try
+        {
+            var session = _authSession ?? throw new InvalidOperationException("Sign in to continue.");
+            if (!force && session.AccessTokenExpiresAtUtc > DateTime.UtcNow.AddMinutes(1)) return session;
+            var rotatedFrom = session.RefreshToken;
+            try { session = await client.RefreshAsync(rotatedFrom, CancellationToken.None); }
+            catch (AccountApiException ex) when (ex.StatusCode == 401)
+            {
+                SignOutLocally("Account session expired — sign in again");
+                throw;
+            }
+            if (_authSession?.RefreshToken != rotatedFrom)
+            {
+                // Sign-out or another account won the race while the refresh request was in flight. Never
+                // resurrect that session; revoke the newly rotated token as best effort.
+                try { await client.LogoutAsync(session.RefreshToken, CancellationToken.None); } catch { }
+                throw new AccountApiException("The account changed while its session was refreshing.", 409);
+            }
+            _authSession = session;
+            var warning = PersistAccountSession();
+            if (warning is not null) _accountStatus.Text = warning;
+            return session;
+        }
+        finally { _accountRefreshGate.Release(); }
+    }
+
+    private string? PersistAccountSession()
+    {
+        if (_authSession is null) return null;
+        try
+        {
+            AccountSessionVault.SaveAccount(_apiBaseUrl, _authSession);
+            return null;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or UriFormatException or InvalidDataException)
+        {
+            return $"Windows could not securely remember this sign-in: {ex.Message}";
+        }
+    }
+
+    private void RestorePairingSession()
+    {
+        var saved = AccountSessionVault.Pairing();
+        if (saved is null || _authSession is null) return;
+        if (saved.AccountId != _authSession.Account.Id || !AccountSessionVault.SameServer(saved.ServerUrl, _apiBaseUrl))
+        {
+            AccountSessionVault.ClearPairing();
+            return;
+        }
+
+        var registration = new PairingRegistration { SessionId = saved.SessionId, ReceiverToken = saved.ReceiverToken };
+        var client = new AccountClient(_apiBaseUrl);
+        _receiverCancellation?.Cancel();
+        _receiverCancellation = new CancellationTokenSource();
+        _pairingClient = client;
+        _pairingRegistration = registration;
+        _tabletLinked = false;
+        _lastPublishedMobilePlan = "";
+        _pairPhone.Text = "Reconnecting phone…";
+        _pairPhone.Enabled = false;
+        _accountStatus.Text = $"Reconnecting tablet{(saved.DeviceName.Length > 0 ? $": {saved.DeviceName}" : "…")}";
+        _ = ReceivePhoneCommandsAsync(client, registration, _receiverCancellation.Token, saved.LastCommandId);
+    }
+
+    private void PersistPairingSession(PairingRegistration registration, string deviceName, long lastCommandId)
+    {
+        if (!ReferenceEquals(_pairingRegistration, registration) || _authSession is null) return;
+        try
+        {
+            AccountSessionVault.SavePairing(_apiBaseUrl, _authSession.Account.Id, registration, deviceName, lastCommandId);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or UriFormatException or InvalidDataException)
+        {
+            // Do not retain an older command cursor: replaying an already-recorded sale is worse than asking
+            // the user to link again after the next restart.
+            AccountSessionVault.ClearPairing();
+            if (!IsDisposed) BeginInvoke(() => _accountStatus.Text = $"Tablet linked for this run, but secure reconnect could not be saved: {ex.Message}");
+        }
+    }
+
+    private void SignOutLocally(string message = "Signed out")
+    {
+        _authSession = null;
+        _receiverCancellation?.Cancel();
+        _receiverCancellation = null;
+        _pairingClient = null;
+        _pairingRegistration = null;
+        _tabletLinked = false;
+        _tabletPlan = null;
+        AccountSessionVault.ClearPairing();
+        AccountSessionVault.ClearAccount();
+        _accountStatus.Text = message;
+        _account.Text = "Account";
+        _pairPhone.Text = "Pair phone";
+        _pairPhone.Enabled = false;
+        UpdateSendTabletButton();
+    }
+
     private async Task SendAnonymousLaunchAsync()
     {
         if (!_settings.Trade.ShareAnonymousUsage) return;
@@ -976,20 +1128,10 @@ public sealed class MainForm : Form
             var choice = MessageBox.Show($"Signed in as {_authSession.Account.DisplayName} ({_authSession.Account.Email}).\n\nSign out?",
                 "Freight Planner account", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
             if (choice != DialogResult.Yes) return;
-            try { await new AccountClient(_apiBaseUrl).LogoutAsync(_authSession.RefreshToken, CancellationToken.None); }
+            var refreshToken = _authSession.RefreshToken;
+            SignOutLocally();
+            try { await new AccountClient(_apiBaseUrl).LogoutAsync(refreshToken, CancellationToken.None); }
             catch { /* Clear the local session even when the server is temporarily unavailable. */ }
-            _authSession = null;
-            _receiverCancellation?.Cancel();
-            _receiverCancellation = null;
-            _pairingClient = null;
-            _pairingRegistration = null;
-            _tabletLinked = false;
-            _tabletPlan = null;
-            _accountStatus.Text = "Signed out";
-            _account.Text = "Account";
-            _pairPhone.Text = "Pair phone";
-            _pairPhone.Enabled = false;
-            UpdateSendTabletButton();
             return;
         }
 
@@ -998,7 +1140,8 @@ public sealed class MainForm : Form
         _apiBaseUrl = dialog.ApiBaseUrl;
         _authSession = dialog.Session;
         _account.Text = "Account";
-        _accountStatus.Text = $"Signed in: {_authSession.Account.DisplayName}";
+        var warning = PersistAccountSession();
+        _accountStatus.Text = $"Signed in: {_authSession.Account.DisplayName}" + (warning is null ? "" : $" — {warning}");
         _pairPhone.Enabled = true;
         SaveSettings();
         _ = SetTradeTrackerEnabledAsync(_settings.Trade.ShareTradeStats);
@@ -1011,9 +1154,9 @@ public sealed class MainForm : Form
         try
         {
             var client = new AccountClient(_apiBaseUrl);
-            if (_authSession.AccessTokenExpiresAtUtc <= DateTime.UtcNow.AddMinutes(1))
-                _authSession = await client.RefreshAsync(_authSession.RefreshToken, CancellationToken.None);
-            var registration = await client.CreatePairingAsync(_authSession.AccessToken, Environment.MachineName, CancellationToken.None);
+            var session = await RefreshAccountAsync(client);
+            var registration = await client.CreatePairingAsync(session.AccessToken, Environment.MachineName, CancellationToken.None);
+            AccountSessionVault.ClearPairing();
             _receiverCancellation?.Cancel();
             _receiverCancellation = new CancellationTokenSource();
             _pairingClient = client;
@@ -1021,7 +1164,7 @@ public sealed class MainForm : Form
             _tabletLinked = false;
             _lastPublishedMobilePlan = "";
             UpdateSendTabletButton();
-            _ = ReceivePhoneCommandsAsync(client, registration, _receiverCancellation.Token);
+            _ = ReceivePhoneCommandsAsync(client, registration, _receiverCancellation.Token, 0);
             _pairPhone.Text = "Waiting for phone…";
             _pairingForm?.Close();
             _pairingForm = new PairingForm(_apiBaseUrl, registration);
@@ -1046,9 +1189,9 @@ public sealed class MainForm : Form
         }
     }
 
-    private async Task ReceivePhoneCommandsAsync(AccountClient client, PairingRegistration registration, CancellationToken cancellationToken)
+    private async Task ReceivePhoneCommandsAsync(AccountClient client, PairingRegistration registration, CancellationToken cancellationToken,
+        long lastCommandId)
     {
-        long lastCommandId = 0;
         var pairingAnnounced = false;
         try
         {
@@ -1084,6 +1227,7 @@ public sealed class MainForm : Form
                 if (poll.Paired && !pairingAnnounced && !IsDisposed)
                 {
                     pairingAnnounced = true;
+                    PersistPairingSession(registration, poll.DeviceName, lastCommandId);
                     BeginInvoke(async () =>
                     {
                         _tabletLinked = true;
@@ -1098,14 +1242,14 @@ public sealed class MainForm : Form
                 }
                 foreach (var command in poll.Commands)
                 {
-                    lastCommandId = Math.Max(lastCommandId, command.Id);
                     if (command.Shortcut.StartsWith("FC1|", StringComparison.Ordinal) || command.Shortcut.StartsWith("FCT2|", StringComparison.Ordinal))
                     {
-                        if (!IsDisposed) BeginInvoke(() => ApplyTabletChecklistCommand(command));
-                        continue;
+                        if (!IsDisposed) await ApplyTabletChecklistCommandOnUiAsync(command);
                     }
-                    if (command.CreatedAtUtc < DateTime.UtcNow.AddSeconds(-20)) continue;
-                    if (!IsDisposed) BeginInvoke(() => _status.Text = $"Phone control ignored (game input disabled): {command.Label}");
+                    else if (command.CreatedAtUtc >= DateTime.UtcNow.AddSeconds(-20) && !IsDisposed)
+                        BeginInvoke(() => _status.Text = $"Phone control ignored (game input disabled): {command.Label}");
+                    lastCommandId = Math.Max(lastCommandId, command.Id);
+                    PersistPairingSession(registration, poll.DeviceName, lastCommandId);
                 }
                 await Task.Delay(650, cancellationToken);
             }
@@ -1124,6 +1268,7 @@ public sealed class MainForm : Form
         _pairingClient = null;
         _pairingRegistration = null;
         _tabletLinked = false;
+        AccountSessionVault.ClearPairing();
         _pairingForm?.Close();
         _pairPhone.Text = "Pair phone";
         _pairPhone.Enabled = _authSession is not null;
@@ -1131,7 +1276,7 @@ public sealed class MainForm : Form
         UpdateSendTabletButton();
     }
 
-    private async void ApplyTabletChecklistCommand(RemoteCommand command)
+    private async Task ApplyTabletChecklistCommandAsync(RemoteCommand command)
     {
         if (_tabletRun is { } run)
         {
@@ -1230,6 +1375,21 @@ public sealed class MainForm : Form
         _accountStatus.Text = $"Tablet progress: stop {stopIndex + 1}/{guide.Count}";
         RefreshManifest();
         _ = PublishTabletPlanAsync(sent);
+    }
+
+    private Task ApplyTabletChecklistCommandOnUiAsync(RemoteCommand command)
+    {
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        BeginInvoke(async () =>
+        {
+            try
+            {
+                await ApplyTabletChecklistCommandAsync(command);
+                completion.SetResult();
+            }
+            catch (Exception ex) { completion.SetException(ex); }
+        });
+        return completion.Task;
     }
 
     private static bool IsFor(ExecutionProgress? progress, TabletPlan plan) =>
@@ -1659,9 +1819,8 @@ public sealed class MainForm : Form
         try
         {
             var client = new AccountClient(_apiBaseUrl);
-            if (_authSession.AccessTokenExpiresAtUtc <= DateTime.UtcNow.AddMinutes(1))
-                _authSession = await client.RefreshAsync(_authSession.RefreshToken, CancellationToken.None);
-            await client.SetTradeProfileAsync(_authSession.AccessToken, enabled, CancellationToken.None);
+            var session = await RefreshAccountAsync(client);
+            await client.SetTradeProfileAsync(session.AccessToken, enabled, CancellationToken.None);
             if (!enabled)
                 return "Leaderboard participation is off; earlier contributions are hidden from public totals.";
 
@@ -1706,9 +1865,8 @@ public sealed class MainForm : Form
         try
         {
             var client = new AccountClient(_apiBaseUrl);
-            if (_authSession.AccessTokenExpiresAtUtc <= DateTime.UtcNow.AddMinutes(1))
-                _authSession = await client.RefreshAsync(_authSession.RefreshToken, CancellationToken.None);
-            await client.UploadCompletedTradeAsync(_authSession.AccessToken, new CommunityTradeUpload
+            var session = await RefreshAccountAsync(client);
+            await client.UploadCompletedTradeAsync(session.AccessToken, new CommunityTradeUpload
             {
                 TradeId = trackerId, CommodityId = trade.CommodityId, CommodityName = trade.CommodityName,
                 OriginId = trade.OriginId, OriginName = trade.OriginName, DestinationId = trade.DestinationId,

@@ -296,6 +296,20 @@ public class TradeRunTests
     }
 
     [Fact]
+    public void Replaying_the_same_tablet_sale_command_does_not_add_a_second_transaction()
+    {
+        var run = Run();
+        run.RecordPurchase(20, 28_200, After(1));
+
+        var first = run.RecordSale(778, "Levski", 8, 34_000, After(20));
+        var replay = run.RecordSale(778, "Levski", 8, 34_000, After(20));
+
+        Assert.Same(first, replay);
+        Assert.Single(run.Sales);
+        Assert.Equal(12, run.RemainingScu);
+    }
+
+    [Fact]
     public void The_stop_marker_moves_on_once_undocked()
     {
         var run = Run();

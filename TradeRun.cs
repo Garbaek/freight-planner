@@ -283,12 +283,19 @@ public sealed class TradeRun
     {
         if (!IsBought) throw new InvalidOperationException("Confirm the actual purchase before recording a sale.");
         if (terminalId <= 0 || string.IsNullOrWhiteSpace(terminalName)) throw new InvalidOperationException("Choose the terminal that bought the cargo.");
-        if (scu <= 0 || scu > RemainingScu) throw new InvalidOperationException($"The sale must be between 1 and {RemainingScu:N0} SCU.");
+        if (scu <= 0) throw new InvalidOperationException($"The sale must be between 1 and {RemainingScu:N0} SCU.");
         if (pricePerScu <= 0 || !double.IsFinite(pricePerScu)) throw new InvalidOperationException("The sale price must be greater than zero.");
+        var soldUtc = utc.ToUniversalTime();
+        // A receiver session can stop after committing the journal but before saving its command cursor. The
+        // relay will deliver that same command again after recovery; its timestamp makes the transaction stable.
+        var replay = _sales.FirstOrDefault(x => x.TerminalId == terminalId && x.Scu == scu &&
+            Math.Abs(x.PricePerScu - pricePerScu) < 0.0001 && x.SoldUtc == soldUtc);
+        if (replay is not null) return replay;
+        if (scu > RemainingScu) throw new InvalidOperationException($"The sale must be between 1 and {RemainingScu:N0} SCU.");
         var sale = new TradeSale
         {
             TerminalId = terminalId, TerminalName = terminalName.Trim(), Scu = scu,
-            PricePerScu = pricePerScu, SoldUtc = utc.ToUniversalTime()
+            PricePerScu = pricePerScu, SoldUtc = soldUtc
         };
         _sales.Add(sale);
         if (RemainingScu == 0) _done[Sold] = sale.SoldUtc;
